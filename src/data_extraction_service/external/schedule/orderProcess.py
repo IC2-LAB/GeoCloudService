@@ -1,5 +1,5 @@
 import src.utils.db.mapper as mapper
-from src.utils.db.oracle import create_pool
+# from src.utils.db.oracle import create_pool
 from  src.utils.logger import logger
 from src.utils.Email import send_email
 import os
