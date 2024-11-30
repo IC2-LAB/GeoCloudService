@@ -34,7 +34,7 @@ from datetime import datetime
 def setup_logging():
     """配置日志系统"""
     # 创建日志目录
-    log_dir = r'D:\log'
+    log_dir = r'C:\bupt_server\DZY\GeoCloudService\log'
     os.makedirs(log_dir, exist_ok=True)
     
     # 创建日志文件名（按日期）

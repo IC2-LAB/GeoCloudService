@@ -51,7 +51,7 @@ from shapely.geometry import Polygon
 
 
 #cmm1126修改
-import schedule
+# import schedule
 import time
 from datetime import datetime, timedelta
 import os
@@ -187,8 +187,8 @@ def process_insert():
     """处理JSON数据插入到外部数据库的操作"""
     try:
         # 写死的路径和表名
-        source_dir = r"C:\Users\1\Desktop\data_extraction\GeoCloudService\satelliteData_process\TB_META_ZY02C"
-        table_name = "TB_META_GF1"
+        source_dir = r"Y:\shareJGF\data\weixing\test"
+        table_name = "TB_META_CB04A"
         
         pool = create_pool()
         processor = SatelliteDataProcess(pool)
