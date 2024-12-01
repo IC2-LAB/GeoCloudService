@@ -4,7 +4,12 @@ import json
 import src.utils.db.mapper as mapper
 from src.utils.logger import logger
 from oracledb import DbObject
-from src.utils.db.mapper import serialize 
+from src.utils.db.mapper import serialize
+from src.data_extraction_service.external.config import (
+    TARGET_PATH,
+    JSON_PROCESS_COUNT,
+    SYNC_TABLES
+)
 
 # def serialize(obj):
 #     """
@@ -123,7 +128,10 @@ from src.utils.logger import logger
 
 class SatelliteDataProcess:
     def __init__(self, pool):
+        self.pool = pool  # 将连接池存储为实例属性
         self.mapper = mapper.Mapper(pool)
+        self.target_path = TARGET_PATH
+        self.json_process_count = JSON_PROCESS_COUNT
         # 定义文件夹名与外网数据库表的映射关系
         self.folder_table_mapping = {
                     # GF1:
@@ -173,6 +181,46 @@ class SatelliteDataProcess:
 
 
                 }
+
+
+    def batch_insert(self, schema_name, table_name, data_list):
+        """批量插入数据到指定表"""
+        try:
+            success_count = 0
+            for data in data_list:
+                try:
+                    # 构建完整的表名（包含schema）
+                    full_table_name = f"{schema_name}.{table_name}"
+                    
+                    # 构建SQL语句，使用绑定参数
+                    columns = ', '.join(data.keys())
+                    placeholders = ', '.join([f':{k}' for k in data.keys()])
+                    sql = f"""
+                        INSERT INTO {full_table_name} (
+                            {columns}
+                        ) VALUES (
+                            {placeholders}
+                        )
+                    """
+                    
+                    # 使用mapper插入数据
+                    with self.pool.acquire() as conn:
+                        with conn.cursor() as cursor:
+                            cursor.execute(sql, data)
+                        conn.commit()
+                    success_count += 1
+                        
+                except Exception as e:
+                    logger.error(f"插入记录失败: {data.get('F_DATANAME', 'unknown')}")
+                    logger.error(f"SQL执行错误: {str(e)}, SQL: {sql}, params: {data}")
+                    continue
+            
+            logger.info(f"批量插入完成: 总计 {len(data_list)} 条记录，成功 {success_count} 条")
+            return success_count
+            
+        except Exception as e:
+            logger.error(f"批量插入过程发生错误: {str(e)}")
+            return 0
         
     def process_directory(self, directory_path, folder_name):
         """
@@ -488,7 +536,9 @@ class SatelliteDataProcess:
                 'F_IMPORTUSER': json_data.get('F_IMPORTUSER'),
                 'F_IMPORTDATE': json_data.get('F_IMPORTTIME'),
                 'F_DATASIZE': format_float(json_data.get('F_DATASIZE')),
-                'F_LOCATION': str(format_float(json_data.get('F_IMAGEGSD'))),  # 将F_IMAGEGSD映射到F_LOCATION
+                'F_DATATYPENAME': json_data.get('F_PRODUCTFORMAT'),
+                'F_LOCATION': str(format_float(json_data.get('F_IMAGEGSD'))),
+                'F_TABLENAME': json_data.get('F_GEOTABLENAME'),   # 将F_IMAGEGSD映射到F_LOCATION
                 'F_PITCHSATELLITEANGLE': format_float(json_data.get('F_PITCHSATELLITEANGLE')),  # 保持原始精度
                 'F_PITCHVIEWINGANGLE': format_float(json_data.get('F_PITCHVIEWINGANGLE')),
                 'F_YAWSATELLITEANGLE': format_float(json_data.get('F_YAWSATELLITEANGLE')),

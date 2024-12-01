@@ -51,27 +51,334 @@ from shapely.geometry import Polygon
 
 
 #cmm1126修改
-# import schedule
+import schedule
 import time
-from datetime import datetime, timedelta
 import os
 import json
+import argparse
+import shutil
+import zipfile
+from datetime import datetime, timedelta
 
 from src.utils.logger import logger
 from src.utils.db.oracle import create_pool
 from src.data_extraction_service.external.schedule.satelliteData_process import SatelliteDataProcess
+from src.data_extraction_service.external.backup_utils import (
+    create_backup_dir,
+    backup_table,
+    create_backup_summary,
+    compress_backup,
+    restore_table_data,
+    list_backups, 
+    verify_backup  
+)
+from src.data_extraction_service.external.config import (
+    BACKUP_PATH,
+    TARGET_PATH,
+    JSON_PROCESS_COUNT,
+    SYNC_TABLES
+)
 
-# 定义配置常量
-SYNC_TABLES = ["TB_META_ZY02C", "GF1_WFV_YSDATA","GF1_YSDATA","GF1B_YSDATA","GF1C_YSDATA","GF1D_YSDATA","GF2_YSDATA","GF5_AHSIDATA","GF5_VIMSDATA","GF6_WFV_DATA","GF6_YSDATA","GF7_BWD_DATA","GF7_MUX_DATA","ZY301A_MUX_DATA","ZY301A_NAD_DATA","ZY302A_MUX_DATA","ZY302A_NAD_DATA","ZY303A_MUX_DATA","ZY303A_NAD_DATA","ZY02C_HRC_DATA","ZY02C_PMS_DATA","ZY1E_AHSI","ZY1F_AHSI","ZY1F_ISR_NSR","CB04A_VNIC","ARCHIVE_DATATRACE","ARCHIVE_METAFILETRACE","CFGMGR_FILESERVER","CSES_01_LAP","CSES_01_SCM",
-               "FBDATUM_0713_142","FBDATUM_0716_142","FBDATUM_0809_162","FBDATUM_0811_162",
-               "GWMD_FBDATUM_0088_2_CAT","GWMD_FBDATUM_0091_2_CAT","GWMD_FBDATUM_0101_2_CAT","GWMD_FBDATUM_0207_41_CAT","GWMD_FBDATUM_0221_61_CAT","GWMD_FBDATUM_0224_61_CAT","GWMD_FBDATUM_0227_61_CAT","GWMD_FBDATUM_0230_61_CAT","GWMD_FBDATUM_0277_2_CAT","GWMD_FBDATUM_0310_2_CAT","GWMD_FBDATUM_0353_2_CAT","GWMD_FBDATUM_0356_2_CAT","GWMD_FBDATUM_0359_2_CAT","GWMD_FBDATUM_0362_2_CAT","GWMD_FBDATUM_0367_61_CAT","GWMD_FBDATUM_0387_2_CAT","GWMD_FBDATUM_0430_61_CAT","GWMD_FBDATUM_0447_2_CAT","GWMD_FBDATUM_0450_61_CAT","GWMD_FBDATUM_0453_2_CAT","GWMD_FBDATUM_0456_2_CAT","GWMD_FBDATUM_0527_61_CAT","GWMD_FBDATUM_0530_61_CAT","GWMD_FBDATUM_0607_61_CAT","GWMD_FBDATUM_0627_122_CAT","GWMD_FBDATUM_0647_122_CAT","GWMD_FBDATUM_0650_122_CAT","GWMD_FBDATUM_0653_122_CAT","GWMD_FBDATUM_0656_122_CAT","GWMD_FBDATUM_0659_122_CAT","GWMD_FBDATUM_0662_122_CAT","GWMD_FBDATUM_0690_2_CAT",
-               "H1C_CZI_L1C","H1C_OCT_L1B","H1C_OCT_L1C","H1D_CZI_L1C","H1D_OCT_L1B","H1D_OCT_L1C","H1D_OCT_L2B",
-               "LT1A","LT1A_ORBIT","LT1B",
-               "ZZZ_DUP_DATATRACE","ZZZ_DUP_META","ZZ_ALL_META","ZZ_OFFLINE_DATA_LIST"
 
-               ]  # 需要同步的表名列表
-# TARGET_PATH = "Z:/shareJGF/order/data/sync_folder"  # 网盘同步目标路径
-TARGET_PATH = r"C:\Users\1\Desktop\data_extraction\GeoCloudService\satelliteData_process"  # 网盘同步目标路径
+
+
+
+
+def backup_schema(schema_name):
+    """备份指定的数据库模式中的TB_META表"""
+    try:
+        logger.info(f"开始备份模式 {schema_name} 中的TB_META表")
+        
+        # 创建备份目录
+        backup_dir = create_backup_dir(schema_name)
+        
+        # 创建数据库连接
+        pool = create_pool()
+        
+        # 获取模式下的所有TB_META开头的表
+        successful_tables = []
+        failed_tables = []
+        
+        with pool.acquire() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    SELECT table_name 
+                    FROM all_tables 
+                    WHERE owner = :schema_name
+                    AND table_name LIKE 'TB_META%'
+                    ORDER BY table_name
+                """, {'schema_name': schema_name.upper()})
+                tables = [row[0] for row in cursor.fetchall()]
+        
+        if not tables:
+            logger.warning(f"模式 {schema_name} 中未找到TB_META开头的表")
+            return
+        
+        # 备份每个表
+        for table in tables:
+            try:
+                count = backup_table(pool, schema_name, table, backup_dir)
+                successful_tables.append((table, count))
+                logger.info(f"表 {table} 备份完成: {count} 条记录")
+            except Exception as e:
+                failed_tables.append((table, str(e)))
+                logger.error(f"备份表 {table} 失败: {str(e)}")
+        
+        # 创建备份摘要
+        create_backup_summary(backup_dir, schema_name, successful_tables, failed_tables)
+        
+        # 压缩备份文件
+        backup_file = compress_backup(backup_dir)
+        logger.info(f"备份完成: {backup_file}")
+        
+        # 输出备份统计信息
+        total_records = sum(count for _, count in successful_tables)
+        logger.info(f"""
+========== 备份统计 ==========
+模式名称: {schema_name}
+成功表数: {len(successful_tables)}
+失败表数: {len(failed_tables)}
+总记录数: {total_records}
+备份文件: {backup_file}
+=============================""")
+        
+    except Exception as e:
+        logger.error(f"备份过程发生错误: {str(e)}")
+
+def restore_schema(backup_path, schema_name):
+    """从备份文件恢复数据库模式"""
+    try:
+        logger.info(f"开始从 {backup_path} 恢复数据到模式 {schema_name}")
+        
+        # 验证备份文件
+        is_valid, message = verify_backup(backup_path)
+        if not is_valid:
+            raise Exception(f"备份文件验证失败: {message}")
+        
+        # 创建临时解压目录
+        temp_dir = os.path.join(os.path.dirname(backup_path), 'temp_restore')
+        os.makedirs(temp_dir, exist_ok=True)
+        
+        try:
+            # 解压备份文件
+            with zipfile.ZipFile(backup_path, 'r') as zip_ref:
+                zip_ref.extractall(temp_dir)
+            
+            pool = create_pool()
+            successful_tables = []
+            failed_tables = []
+            skipped_tables = []
+            
+            # 处理每个JSON文件
+            for file_name in os.listdir(temp_dir):
+                if not file_name.endswith('.json') or file_name == 'backup_summary.txt':
+                    continue
+                    
+                table_name = os.path.splitext(file_name)[0]
+                json_path = os.path.join(temp_dir, file_name)
+                
+                try:
+                    # 读取数据
+                    with open(json_path, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                    
+                    if not data:
+                        skipped_tables.append(table_name)
+                        continue
+                    
+                    # 处理每条记录
+                    for record in data:
+                        # 处理日期字段
+                        date_fields = ['F_PRODUCETIME', 'F_RECEIVETIME', 'F_IMPORTDATE']
+                        for field in date_fields:
+                            if field in record and record[field]:
+                                try:
+                                    # 尝试解析不同格式的日期
+                                    if isinstance(record[field], str):
+                                        # 移除可能存在的时区信息
+                                        date_str = record[field].split('+')[0].strip()
+                                        try:
+                                            # 尝试解析带毫秒的格式
+                                            dt = datetime.strptime(date_str, '%Y-%m-%d %H:%M:%S.%f')
+                                        except ValueError:
+                                            try:
+                                                # 尝试解析不带毫秒的格式
+                                                dt = datetime.strptime(date_str, '%Y-%m-%d %H:%M:%S')
+                                            except ValueError:
+                                                # 尝试解析ISO格式
+                                                if 'T' in date_str:
+                                                    dt = datetime.fromisoformat(date_str.replace('Z', ''))
+                                                else:
+                                                    raise
+                                        
+                                        # 统一转换为Oracle接受的格式
+                                        record[field] = dt.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+                                except Exception as e:
+                                    logger.warning(f"日期转换失败 {field}: {record[field]} - {str(e)}")
+                                    record[field] = None
+
+                        # 处理空间信息
+                        if 'F_SPATIAL_INFO' in record and record['F_SPATIAL_INFO']:
+                            try:
+                                if isinstance(record['F_SPATIAL_INFO'], dict) and 'coordinates' in record['F_SPATIAL_INFO']:
+                                    with pool.acquire() as conn:
+                                        # 创建 SDO_GEOMETRY 对象
+                                        sdo_geometry = conn.gettype("MDSYS.SDO_GEOMETRY")
+                                        sdo_elem_info = conn.gettype("MDSYS.SDO_ELEM_INFO_ARRAY")
+                                        sdo_ordinate = conn.gettype("MDSYS.SDO_ORDINATE_ARRAY")
+                                        
+                                        obj = sdo_geometry.newobject()
+                                        obj.SDO_GTYPE = 2003  # 2D polygon
+                                        obj.SDO_SRID = 4326   # WGS84
+                                        obj.SDO_ELEM_INFO = sdo_elem_info.newobject()
+                                        obj.SDO_ELEM_INFO.extend([1, 1003, 1])
+                                        
+                                        obj.SDO_ORDINATES = sdo_ordinate.newobject()
+                                        coords = record['F_SPATIAL_INFO']['coordinates']
+                                        for coord in coords:
+                                            obj.SDO_ORDINATES.extend([coord[0], coord[1]])
+                                        
+                                        record['F_SPATIAL_INFO'] = obj
+                            except Exception as e:
+                                logger.error(f"空间信息转换失败: {str(e)}")
+                                record['F_SPATIAL_INFO'] = None
+                    
+                    # 批量插入数据
+                    success_count, failed_count = restore_table_data(pool, schema_name, 
+                                                                   table_name, data)
+                    
+                    if success_count > 0:
+                        successful_tables.append((table_name, success_count))
+                        logger.info(f"表 {table_name} 恢复完成: {success_count} 条记录")
+                    if failed_count > 0:
+                        logger.warning(f"表 {table_name} 有 {failed_count} 条记录恢复失败")
+                        
+                except Exception as e:
+                    failed_tables.append((table_name, str(e)))
+                    logger.error(f"恢复表 {table_name} 失败: {str(e)}")
+            
+            # 创建恢复报告
+            report_path = os.path.join(temp_dir, 'restore_report.txt')
+            with open(report_path, 'w', encoding='utf-8') as f:
+                f.write(f"恢复时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"目标模式: {schema_name}\n\n")
+                
+                if successful_tables:
+                    f.write("成功恢复的表:\n")
+                    for table, count in successful_tables:
+                        f.write(f"  - {table}: {count} 条记录\n")
+                
+                if skipped_tables:
+                    f.write("\n跳过的空表:\n")
+                    for table in skipped_tables:
+                        f.write(f"  - {table}\n")
+                
+                if failed_tables:
+                    f.write("\n恢复失败的表:\n")
+                    for table, error in failed_tables:
+                        f.write(f"  - {table}: {error}\n")
+            
+            logger.info(f"\n========== 恢复完成 ==========")
+            logger.info(f"目标模式: {schema_name}")
+            logger.info(f"成功恢复: {len(successful_tables)} 个表")
+            logger.info(f"跳过表数: {len(skipped_tables)} 个表")
+            logger.info(f"失败表数: {len(failed_tables)} 个表")
+            logger.info(f"恢复报告: {report_path}")
+            logger.info(f"=============================")
+            
+        finally:
+            # 清理临时目录
+            try:
+                if os.path.exists(temp_dir):
+                    shutil.rmtree(temp_dir)
+            except Exception as e:
+                logger.warning(f"清理临时目录失败: {str(e)}")
+        
+        logger.info(f"回滚完成: 模式 {schema_name} 已恢复到 {os.path.basename(backup_path).split('.')[0]}")
+        
+    except Exception as e:
+        logger.error(f"恢复过程中发生错误: {str(e)}")
+        raise
+
+def rollback_schema(schema_name, backup_time=None, force=False):
+    """回滚数据库模式到指定的备份时间点"""
+    try:
+        # 获取可用的备份文件
+        backups = list_backups(schema_name)
+        if not backups:
+            logger.error(f"未找到模式 {schema_name} 的任何备份文件")
+            return False
+
+        # 如果未指定备份时间，显示可用的备份列表
+        if not backup_time:
+            logger.info("\n可用的备份时间点:")
+            for i, backup in enumerate(backups, 1):
+                logger.info(f"\n{i}. 备份时间: {backup['backup_time']}")
+                logger.info(f"文件路径: {backup['file_path']}")
+                logger.info("备份摘要:")
+                logger.info(backup['summary'])
+            return True
+
+        # 查找匹配的备份文件
+        selected_backup = None
+        for backup in backups:
+            if backup['backup_time'].startswith(backup_time):
+                selected_backup = backup
+                break
+
+        if not selected_backup:
+            logger.error(f"未找到时间点 {backup_time} 的备份文件")
+            return False
+
+        # 验证备份文件
+        is_valid, message = verify_backup(selected_backup['file_path'])
+        if not is_valid:
+            logger.error(f"备份文件验证失败: {message}")
+            return False
+
+        # 确认回滚操作
+        if not force:
+            logger.warning(f"""
+警告: 即将执行回滚操作
+目标模式: {schema_name}
+备份时间: {selected_backup['backup_time']}
+备份文件: {selected_backup['file_path']}
+
+备份摘要:
+{selected_backup['summary']}
+
+此操作将清空并重写所有TB_META表的数据。
+是否继续? (y/n)""")
+            
+            confirm = input().lower()
+            if confirm != 'y':
+                logger.info("回滚操作已取消")
+                return False
+
+        # 执行回滚
+        restore_schema(selected_backup['file_path'], schema_name)
+        logger.info(f"回滚完成: 模式 {schema_name} 已恢复到 {backup_time}")
+        return True
+
+    except Exception as e:
+        logger.error(f"回滚过程发生错误: {str(e)}")
+        return False
+
+def main():
+    parser = argparse.ArgumentParser(description='数据库管理工具')
+    subparsers = parser.add_subparsers(dest='command', help='可用命令')
+    
+    # 添加回滚命令
+    rollback_parser = subparsers.add_parser('rollback', help='回滚数据库模式到指定备份时间点')
+    rollback_parser.add_argument('schema', help='要回滚的数据库模式名称')
+    rollback_parser.add_argument('--time', help='要回滚到的备份时间点 (格式: YYYYMMDD_HHMMSS)')
+    rollback_parser.add_argument('--force', action='store_true', help='强制执行回滚，不进行确认')
+    
+    args = parser.parse_args()
+    
+    if args.command == 'rollback':
+        rollback_schema(args.schema, args.time, args.force)
+
 
 def sync_data(sync_type):
     """
@@ -187,7 +494,7 @@ def process_insert():
     """处理JSON数据插入到外部数据库的操作"""
     try:
         # 写死的路径和表名
-        source_dir = r"Y:\shareJGF\data\weixing\test"
+        source_dir = r"C:\Users\1\Desktop\data_extraction\GeoCloudService\satelliteData_process\TB_META_ZY02C\test"
         table_name = "TB_META_CB04A"
         
         pool = create_pool()
@@ -197,24 +504,21 @@ def process_insert():
         logger.error(f"处理外部数据插入时发生错误: {str(e)}")
 
 def main():
-    """
-    主函数，提供三种运行模式：
-    1. initial: 同步指定时间段的历史数据
-    2. daily: 设置定时任务，每天同步新增数据
-    3. insert: 将JSON文件插入到外部数据库
-    """
-    import argparse
+    """主函数"""
     parser = argparse.ArgumentParser(description='数据同步工具')
     subparsers = parser.add_subparsers(dest='command', help='可用命令')
 
-    # initial命令
+    # 添加子命令
     parser_initial = subparsers.add_parser('initial', help='同步历史数据')
-
-    # daily命令
     parser_daily = subparsers.add_parser('daily', help='设置每日同步任务')
-
-    # insert命令
     parser_insert = subparsers.add_parser('insert', help='插入JSON数据到数据库')
+    
+    parser_backup = subparsers.add_parser('backup', help='备份指定的数据库模式')
+    parser_backup.add_argument('schema', help='要备份的数据库模式名称')
+    
+    parser_restore = subparsers.add_parser('restore', help='从备份恢复数据库模式')
+    parser_restore.add_argument('backup_path', help='备份文件的路径(.zip文件)')
+    parser_restore.add_argument('schema', help='要恢复到的目标模式名称')
     
     args = parser.parse_args()
     
@@ -222,6 +526,12 @@ def main():
         sync_data(args.command)
     elif args.command == 'insert':
         process_insert()
+    elif args.command == 'backup':
+        backup_schema(args.schema)
+    elif args.command == 'restore':
+        restore_schema(args.backup_path, args.schema)
+    else:
+        parser.print_help()
 
 if __name__ == "__main__":
     main()
