@@ -105,7 +105,7 @@ def backup_schema(schema_name):
                     SELECT table_name 
                     FROM all_tables 
                     WHERE owner = :schema_name
-                    AND table_name LIKE 'TB_META%'
+                    AND table_name ='TB_META_GF6' OR table_name='TB_META_GF5'
                     ORDER BY table_name
                 """, {'schema_name': schema_name.upper()})
                 tables = [row[0] for row in cursor.fetchall()]
