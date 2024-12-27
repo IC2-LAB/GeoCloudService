@@ -3,7 +3,8 @@ name = "GeoCloudService"
 version = "0.1.0"
 description = "Default template for PDM package"
 authors = [
-    {name = "IC2", email = "houlu8674@bupt.edu.cn"}
+    {name = "IC2", email = "houlu8674@bupt.edu.cn"},
+    {name = "”LOVEYOUTHREETHOUND“", email = "3541188450@qq.com"},
 ]
 dependencies = [
     "flask>=3.0.3",
@@ -11,11 +12,12 @@ dependencies = [
     "waitress>=3.0.0",
     "dbutils>=3.1.0",
     "schedule>=1.2.2",
-    "oracledb>=2.4.1",
+    "oracledb>=2.5.0",
     "datetime>=5.5",
     "flask-siwadoc>=0.2.2",
     "pydantic>=1.9.0",
     "geopandas>=1.0.1",
+    "pywin32>=308",
 ]
 requires-python = "==3.11.*"
 readme = "README.md"
