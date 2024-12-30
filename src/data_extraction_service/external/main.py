@@ -754,6 +754,140 @@ def import_daily():
         schedule.run_pending()
         time.sleep(60)
 
+def import_folder(folder_name):
+    """处理单个文件夹的数据"""
+    try:
+        # 获取当前日期时间作为任务标识
+        task_start_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        
+        logger.info("\n" + "="*50)
+        logger.info(f"开始处理文件夹 {folder_name} - {task_start_time}")
+        logger.info("-"*50)
+        
+        pool = create_pool()
+        processor = SatelliteDataProcess(pool)
+        
+        # 定义文件夹和表的映射关系
+        folder_table_mapping = {
+            # GF1系列
+            "GF1_WFV_YSDATA": "TB_META_GF1",
+            "GF1_YSDATA": "TB_META_GF1",
+            "GF1B_YSDATA": "TB_META_GF1B",
+            "GF1C_YSDATA": "TB_META_GF1C",
+            "GF1D_YSDATA": "TB_META_GF1D",
+            # GF2系列
+            "GF2_YSDATA": "TB_META_GF2",
+            # GF5系列
+            "GF5_AHSIDATA": "TB_META_GF5",
+            "GF5_VIMSDATA": "TB_META_GF5",
+            # GF6系列
+            "GF6_WFV_DATA": "TB_META_GF6",
+            "GF6_YSDATA": "TB_META_GF6",
+            # GF7系列
+            "GF7_BWD_DATA": "TB_META_GF7",
+            "GF7_MUX_DATA": "TB_META_GF7",
+            # ZY301系列
+            "ZY301A_MUX_DATA": "TB_META_ZY301",
+            "ZY301A_NAD_DATA": "TB_META_ZY301",
+            # ZY302系列
+            "ZY302A_MUX_DATA": "TB_META_ZY302",
+            "ZY302A_NAD_DATA": "TB_META_ZY302",
+            # ZY303系列
+            "ZY303A_MUX_DATA": "TB_META_ZY303",
+            "ZY303A_NAD_DATA": "TB_META_ZY303",
+            # ZY02C系列
+            "ZY02C_HRC_DATA": "TB_META_ZY02C",
+            "ZY02C_PMS_DATA": "TB_META_ZY02C",
+            # ZY1E系列
+            "ZY1E_AHSI": "TB_META_ZY1E",
+            # ZY1F系列
+            "ZY1F_AHSI": "TB_META_ZY1F",
+            "ZY1F_ISR_NSR": "TB_META_ZY1F",
+            # CB04A系列
+            "CB04A_VNIC": "TB_META_CB04A",
+        }
+        
+        # 使用 Y 盘路径
+        base_path = r"Y:\shareJGF\data\WEIXING_BUPTBACKUP"
+        base_path = "test_insert"
+        folder_path = os.path.join(base_path, folder_name)
+        
+        if not os.path.exists(folder_path):
+            logger.error(f"文件夹不存在: {folder_path}")
+            return
+        
+        success_count = 0
+        failed_count = 0
+        
+        # 处理卫星数据文件夹
+        if folder_name in folder_table_mapping:
+            table_name = folder_table_mapping[folder_name]
+            logger.info(f"处理卫星数据: {folder_name} -> {table_name}")
+            
+            # 处理文件夹中的所有JSON文件
+            for file_name in os.listdir(folder_path):
+                if not file_name.endswith('.json'):
+                    continue
+                    
+                file_path = os.path.join(folder_path, file_name)
+                try:
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                    
+                    if processor.mapper.insert_satellite_data(table_name, data):
+                        success_count += 1
+                        logger.info(f"✓ 成功导入: {file_name}")
+                    else:
+                        failed_count += 1
+                        logger.error(f"✗ 导入失败: {file_name}")
+                        
+                except Exception as e:
+                    failed_count += 1
+                    logger.error(f"处理文件失败 {file_name}: {str(e)}")
+        
+        # 处理图像数据文件夹
+        elif folder_name == "VIEW_META_BLOB":
+            logger.info("处理图像数据")
+            
+            for file_name in os.listdir(folder_path):
+                if not file_name.endswith('.json'):
+                    continue
+                    
+                file_path = os.path.join(folder_path, file_name)
+                try:
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                    
+                    if processor.mapper.insertGraphData(data):
+                        success_count += 1
+                        logger.info(f"✓ 成功导入图像数据: {file_name}")
+                    else:
+                        failed_count += 1
+                        logger.error(f"✗ 导入图像数据失败: {file_name}")
+                        
+                except Exception as e:
+                    failed_count += 1
+                    logger.error(f"处理图像数据文件失败 {file_name}: {str(e)}")
+        
+        # 输出总结信息
+        task_end_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        logger.info("\n" + "="*50)
+        logger.info(f"文件夹 {folder_name} 处理完成 - {task_end_time}")
+        logger.info("-"*50)
+        logger.info(f"成功: {success_count} 个")
+        logger.info(f"失败: {failed_count} 个")
+        logger.info("="*50 + "\n")
+        
+        # 更新健康检查文件
+        health_file = os.path.join("logs", f'import_{folder_name}_health.txt')
+        with open(health_file, 'w', encoding='utf-8') as f:
+            f.write(f"Last import: {task_end_time}\n")
+            f.write(f"Success: {success_count}\n")
+            f.write(f"Failed: {failed_count}\n")
+        
+    except Exception as e:
+        logger.error(f"处理文件夹 {folder_name} 错误: {str(e)}")
+
 def main():
     """主函数"""
     import argparse

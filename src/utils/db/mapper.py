@@ -248,6 +248,20 @@ class Mapper:
     def insertGraphData(self, data):
         """将JSON数据（包含base64编码的BLOB）插入到TB_BAS_META_BLOB表"""
         try:
+            # 检查记录是否已存在
+            check_sql = """
+                SELECT COUNT(1) FROM TB_BAS_META_BLOB 
+                WHERE F_DID = :did
+            """
+            
+            with self.pool.acquire() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(check_sql, {'did': data.get('F_DID')})
+                    if cursor.fetchone()[0] > 0:
+                        logger.info(f"BLOB记录已存在，跳过: F_DID = {data.get('F_DID')}")
+                        return True
+            
+            # 如果记录不存在，继续插入流程
             # 准备SQL语句，动态生成列名和占位符
             columns = []
             values = []
@@ -305,6 +319,20 @@ class Mapper:
     def insert_satellite_data(self, table_name, data):
         """将卫星数据插入到指定表"""
         try:
+            # 首先检查记录是否已存在
+            check_sql = f"""
+                SELECT COUNT(1) FROM JGF_GXFW.{table_name} 
+                WHERE F_DATANAME = :dataname
+            """
+            
+            with self.pool.acquire() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(check_sql, {'dataname': data.get('F_DATANAME')})
+                    if cursor.fetchone()[0] > 0:
+                        logger.info(f"记录已存在，跳过: {data.get('F_DATANAME')}")
+                        return True  # 返回 True 因为这不算作错误
+            
+            # 如果记录不存在，继续插入流程
             # 定义使用 F_STARTTIME 的表名列表
             use_starttime_tables = [
                 "GF5_VIMSDATA", "GF5_AHSIDATA", "ZY1F_AHSI", "ZY1F_ISR_NSR",
