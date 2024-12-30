@@ -522,6 +522,13 @@ def import_folder_data():
 def import_initial():
     """初始导入所有文件夹中的数据"""
     try:
+        # 获取当前日期时间作为任务标识
+        task_start_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        
+        logger.info("\n" + "="*50)
+        logger.info(f"开始初始导入任务 - {task_start_time}")
+        logger.info("-"*50)
+        
         pool = create_pool()
         processor = SatelliteDataProcess(pool)
         
@@ -567,10 +574,6 @@ def import_initial():
         
         # 使用 test_insert 目录
         base_path = "test_insert"
-        
-        logger.info("\n" + "="*50)
-        logger.info("开始初始导入数据")
-        logger.info("-"*50)
         
         total_success = 0
         total_failed = 0
@@ -659,8 +662,9 @@ def import_initial():
                 logger.info(f"图像数据处理完成: 成功 {success_count} 个, 失败 {failed_count} 个")
         
         # 输出总结信息
+        task_end_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         logger.info("\n" + "="*50)
-        logger.info("初始导入任务完成")
+        logger.info(f"初始导入任务完成 - {task_end_time}")
         logger.info("-"*50)
         logger.info(f"总计成功: {total_success} 个")
         logger.info(f"总计失败: {total_failed} 个")
@@ -676,6 +680,13 @@ def import_initial():
                 logger.info(f"  ✗ {folder:<30} 成功 {success:>6} 条, 失败 {failed:>6} 条")
         
         logger.info("="*50 + "\n")
+        
+        # 更新健康检查文件
+        health_file = os.path.join("logs", 'import_health.txt')
+        with open(health_file, 'w', encoding='utf-8') as f:
+            f.write(f"Last initial import: {task_end_time}\n")
+            f.write(f"Total success: {total_success}\n")
+            f.write(f"Total failed: {total_failed}\n")
         
     except Exception as e:
         logger.error(f"初始导入任务错误: {str(e)}")
