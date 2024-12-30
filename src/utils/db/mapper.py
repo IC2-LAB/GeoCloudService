@@ -61,7 +61,7 @@ class Mapper:
                     if cursor.fetchone():
                         has_spatial_info = True
             
-            # 根据是否有空间信息字段�����询
+            # 根据是否有空间信息字段询
             if has_spatial_info:
                 query = f"""
                     SELECT 
@@ -303,9 +303,37 @@ class Mapper:
             return False
 
     def insert_satellite_data(self, table_name, data):
-        """将卫��数据插入到指定表"""
+        """将卫星数据插入到指定表"""
         try:
-            # 字段映射关系
+            # 定义使用 F_STARTTIME 的表名列表
+            use_starttime_tables = [
+                "GF5_VIMSDATA", "GF5_AHSIDATA", "ZY1F_AHSI", "ZY1F_ISR_NSR",
+            ]
+
+            # 经纬度字段映射关系（支持两种命名方式）
+            lat_long_mapping = {
+                # 第一种命名方式
+                'F_UPPERLEFTLAT': 'F_TOPLEFTLATITUDE',
+                'F_UPPERLEFTLONG': 'F_TOPLEFTLONGITUDE',
+                'F_UPPERRIGHTLAT': 'F_TOPRIGHTLATITUDE',
+                'F_UPPERRIGHTLONG': 'F_TOPRIGHTLONGITUDE',
+                'F_BOTTOMRIGHTLAT': 'F_BOTTOMRIGHTLATITUDE',
+                'F_BOTTOMRIGHTLONG': 'F_BOTTOMRIGHTLONGITUDE',
+                'F_BOTTOMLEFTLAT': 'F_BOTTOMLEFTLATITUDE',
+                'F_BOTTOMLEFTLONG': 'F_BOTTOMLEFTLONGITUDE',
+                
+                # 第二种命名方式
+                'F_DATAUPPERLEFTLAT': 'F_TOPLEFTLATITUDE',
+                'F_DATAUPPERLEFTLONG': 'F_TOPLEFTLONGITUDE',
+                'F_DATAUPPERRIGHTLAT': 'F_TOPRIGHTLATITUDE',
+                'F_DATAUPPERRIGHTLONG': 'F_TOPRIGHTLONGITUDE',
+                'F_DATALOWERRIGHTLAT': 'F_BOTTOMRIGHTLATITUDE',
+                'F_DATALOWERRIGHTLONG': 'F_BOTTOMRIGHTLONGITUDE',
+                'F_DATALOWERLEFTLAT': 'F_BOTTOMLEFTLATITUDE',
+                'F_DATALOWERLEFTLONG': 'F_BOTTOMLEFTLONGITUDE',
+            }
+
+            # 更新字段映射，加入经纬度映射
             field_mapping = {
                 # 直接映射的字段
                 'F_DATANAME': 'F_DATANAME',
@@ -314,6 +342,7 @@ class Mapper:
                 'F_SATELLITEID': 'F_SATELLITEID',
                 'F_SENSORID': 'F_SENSORID',
                 'F_CLOUDPERCENT': 'F_CLOUDPERCENT',
+                'F_CLOUDCOVER': 'F_CLOUDPERCENT',
                 'F_ORBITID': 'F_ORBITID',
                 'F_SCENEID': 'F_SCENEID',
                 'F_SCENEPATH': 'F_SCENEPATH',
@@ -325,28 +354,29 @@ class Mapper:
                 'F_YAWSATELLITEANGLE': 'F_YAWSATELLITEANGLE',
                 'F_ROLLSATELLITEANGLE': 'F_ROLLSATELLITEANGLE',
                 'F_ROLLVIEWINGANGLE': 'F_ROLLVIEWINGANGLE',
-                'F_TABLENAME': 'F_TABLENAME',
-                
-                # 经纬度字段映射
-                'F_UPPERLEFTLAT': 'F_TOPLEFTLATITUDE',
-                'F_UPPERLEFTLONG': 'F_TOPLEFTLONGITUDE',
-                'F_UPPERRIGHTLAT': 'F_TOPRIGHTLATITUDE',
-                'F_UPPERRIGHTLONG': 'F_TOPRIGHTLONGITUDE',
-                'F_BOTTOMRIGHTLAT': 'F_BOTTOMRIGHTLATITUDE',
-                'F_BOTTOMRIGHTLONG': 'F_BOTTOMRIGHTLONGITUDE',
-                'F_BOTTOMLEFTLAT': 'F_BOTTOMLEFTLATITUDE',
-                'F_BOTTOMLEFTLONG': 'F_BOTTOMLEFTLONGITUDE',
                 
                 # 其他特殊映射
                 'F_IMAGEGSD': 'F_LOCATION',
-                'F_IMPORTTIME': 'F_IMPORTDATE',  # 添加 F_IMPORTTIME 映射
+                'F_IMPORTTIME': 'F_IMPORTDATE',
+                'F_GEOTABLENAME': 'F_TABLENAME',
+                'F_PRODUCTFORMAT': 'F_DATATYPENAME',
             }
+
+            field_mapping.update(lat_long_mapping)
 
             # 准备插入数据
             insert_data = {}
             for src_field, dest_field in field_mapping.items():
                 if src_field in data:
-                    insert_data[dest_field] = data[src_field]
+                    # 特殊处理 F_SENSORID 字段
+                    if src_field == 'F_SENSORID' and data[src_field]:
+                        sensor_id = ''.join(c for c in data[src_field] if not c.isdigit())
+                        insert_data[dest_field] = sensor_id
+                    # 处理云量字段，避免重复
+                    elif dest_field == 'F_CLOUDPERCENT' and 'F_CLOUDPERCENT' in insert_data:
+                        continue
+                    else:
+                        insert_data[dest_field] = data[src_field]
 
             # 特殊处理：将 F_DATAID 映射为 F_DID
             if 'F_DATAID' in data and data['F_DATAID'] is not None:
@@ -363,16 +393,46 @@ class Mapper:
 
             # 处理时间字段 - 从ISO格式转换为Oracle日期格式
             time_fields = {
-                'F_PRODUCETIME': data.get('F_PRODUCETIME', '').replace('T', ' ').replace('Z', ''),
-                'F_RECEIVETIME': data.get('F_RECEIVETIME', '').replace('T', ' ').replace('Z', ''),
-                'F_IMPORTDATE': data.get('F_IMPORTTIME', '').replace('T', ' ').replace('Z', '')  # 使用 F_IMPORTTIME
+                'F_PRODUCETIME': data.get('F_PRODUCETIME', ''),
+                'F_IMPORTDATE': data.get('F_IMPORTTIME', '')
             }
 
+            # 处理 F_RECEIVETIME：优先使用 F_RECEIVETIME，如果没有则尝试使用 F_STARTTIME
+            if 'F_RECEIVETIME' in data and data['F_RECEIVETIME']:
+                time_fields['F_RECEIVETIME'] = data['F_RECEIVETIME']
+                logger.debug(f"使用 F_RECEIVETIME: {data['F_RECEIVETIME']}")
+            elif 'F_STARTTIME' in data and data['F_STARTTIME']:
+                time_fields['F_RECEIVETIME'] = data['F_STARTTIME']
+                logger.debug(f"使用 F_STARTTIME 作为 F_RECEIVETIME: {data['F_STARTTIME']}")
+            else:
+                time_fields['F_RECEIVETIME'] = ''
+                logger.debug("F_RECEIVETIME 和 F_STARTTIME 都不存在")
+
+            # 处理每个时间字段
+            for field, value in time_fields.items():
+                if value:
+                    # 处理时间格式
+                    if 'T' in value:
+                        # 处理带T的ISO格式
+                        timestamp = value.replace('T', ' ')
+                        if '.000Z' in timestamp:
+                            timestamp = timestamp.replace('.000Z', '')
+                        elif 'Z' in timestamp:
+                            timestamp = timestamp.replace('Z', '')
+                    else:
+                        timestamp = value
+                    insert_data[field] = timestamp
+                    logger.debug(f"处理时间字段 {field}: {timestamp}")
+
             # 生成空间信息
-            if all(key in insert_data for key in ['F_TOPLEFTLONGITUDE', 'F_TOPLEFTLATITUDE', 
-                                                'F_TOPRIGHTLONGITUDE', 'F_TOPRIGHTLATITUDE',
-                                                'F_BOTTOMRIGHTLONGITUDE', 'F_BOTTOMRIGHTLATITUDE',
-                                                'F_BOTTOMLEFTLONGITUDE', 'F_BOTTOMLEFTLATITUDE']):
+            required_fields = [
+                'F_TOPLEFTLATITUDE', 'F_TOPLEFTLONGITUDE',
+                'F_TOPRIGHTLATITUDE', 'F_TOPRIGHTLONGITUDE',
+                'F_BOTTOMRIGHTLATITUDE', 'F_BOTTOMRIGHTLONGITUDE',
+                'F_BOTTOMLEFTLATITUDE', 'F_BOTTOMLEFTLONGITUDE'
+            ]
+
+            if all(field in insert_data for field in required_fields):
                 # 构建多边形的坐标数组
                 coordinates = [
                     insert_data['F_TOPLEFTLONGITUDE'], insert_data['F_TOPLEFTLATITUDE'],
@@ -397,19 +457,14 @@ class Mapper:
 
             # 构建 SQL 语句
             columns = list(insert_data.keys())
-            # 添加不在 insert_data 中的时间字段
-            for time_field in time_fields:
-                if time_field not in columns:
-                    columns.append(time_field)
-
             values = []
             bind_params = {}
 
             for col in columns:
-                if col in time_fields:
-                    if time_fields[col]:
-                        values.append(f"TO_TIMESTAMP(:{col}, 'YYYY-MM-DD HH24:MI:SS.FF3')")
-                        bind_params[col] = time_fields[col]
+                if col in ['F_PRODUCETIME', 'F_RECEIVETIME', 'F_IMPORTDATE']:
+                    if col in insert_data and insert_data[col]:
+                        values.append(f"TO_DATE(:{col}, 'YYYY-MM-DD HH24:MI:SS')")  # 使用 TO_DATE 而不是 TO_TIMESTAMP
+                        bind_params[col] = insert_data[col]
                     else:
                         values.append("NULL")
                 elif col == 'F_SPATIAL_INFO' and 'F_SPATIAL_INFO' in insert_data:

@@ -13,15 +13,16 @@ def main():
         return
 
     # 添加子命令解析器
-    subparsers = parser.add_subparsers(dest='service')
-    
-    # 添加 internal 子命令
-    internal_parser = subparsers.add_parser('internal')
+    subparsers = parser.add_subparsers(dest='service', help='选择服务类型')
     
     # 添加 external 子命令
     external_parser = subparsers.add_parser('external')
-    external_parser.add_argument('mode', choices=['initial', 'daily', 'graph', 'import'],  # 添加 'import' 选项
-                               help='运行模式: initial-历史数据同步, daily-每日同步, graph-图形数据同步, import-导入测试数据')
+    external_parser.add_argument('mode', choices=['initial', 'daily', 'graph', 'import', 'insert_initial', 'insert_daily'], 
+                               help='运行模式: initial-历史数据同步, daily-每日同步, graph-图形数据同步, '
+                                    'import-导入数据到数据库, insert_initial-初始插入所有数据, insert_daily-每日定时插入新数据')
+    
+    # 添加 internal 子命令
+    internal_parser = subparsers.add_parser('internal')
     
     # 添加 web 子命令
     web_parser = subparsers.add_parser('web')

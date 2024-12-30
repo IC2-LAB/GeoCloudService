@@ -90,7 +90,7 @@ def sync_graph_data():
         logger.info(f"失败表数量: {len(failed_tables)}")
         
         if failed_tables:
-            logger.info("\n处理���败的表:")
+            logger.info("\n处理失败的表:")
             for table, error in failed_tables:
                 logger.info(f"   {table:<30} 错误: {error}")
         
@@ -295,7 +295,7 @@ def sync_data(sync_type):
                     if successful_tables:
                         logger.info("\n成功同步的表:")
                         for table, count, blob_count in successful_tables:
-                            logger.info(f"  ✓ {table:<30} {count:>6} 条记��, {blob_count:>6} 条BLOB数据")
+                            logger.info(f"  ✓ {table:<30} {count:>6} 条记录, {blob_count:>6} 条BLOB数据")
                     
                     if failed_tables:
                         logger.info("\n同步失败的表:")
@@ -519,28 +519,250 @@ def import_folder_data():
     except Exception as e:
         logger.error(f"导入任务初始化错误: {str(e)}")
 
+def import_initial():
+    """初始导入所有文件夹中的数据"""
+    try:
+        pool = create_pool()
+        processor = SatelliteDataProcess(pool)
+        
+        # 定义文件夹和表的映射关系
+        folder_table_mapping = {
+            # GF1系列
+            "GF1_WFV_YSDATA": "TB_META_GF1",
+            "GF1_YSDATA": "TB_META_GF1",
+            "GF1B_YSDATA": "TB_META_GF1B",
+            "GF1C_YSDATA": "TB_META_GF1C",
+            "GF1D_YSDATA": "TB_META_GF1D",
+            # GF2系列
+            "GF2_YSDATA": "TB_META_GF2",
+            # GF5系列
+            "GF5_AHSIDATA": "TB_META_GF5",
+            "GF5_VIMSDATA": "TB_META_GF5",
+            # GF6系列
+            "GF6_WFV_DATA": "TB_META_GF6",
+            "GF6_YSDATA": "TB_META_GF6",
+            # GF7系列
+            "GF7_BWD_DATA": "TB_META_GF7",
+            "GF7_MUX_DATA": "TB_META_GF7",
+            # ZY301系列
+            "ZY301A_MUX_DATA": "TB_META_ZY301",
+            "ZY301A_NAD_DATA": "TB_META_ZY301",
+            # ZY302系列
+            "ZY302A_MUX_DATA": "TB_META_ZY302",
+            "ZY302A_NAD_DATA": "TB_META_ZY302",
+            # ZY303系列
+            "ZY303A_MUX_DATA": "TB_META_ZY303",
+            "ZY303A_NAD_DATA": "TB_META_ZY303",
+            # ZY02C系列
+            "ZY02C_HRC_DATA": "TB_META_ZY02C",
+            "ZY02C_PMS_DATA": "TB_META_ZY02C",
+            # ZY1E系列
+            "ZY1E_AHSI": "TB_META_ZY1E",
+            # ZY1F系列
+            "ZY1F_AHSI": "TB_META_ZY1F",
+            "ZY1F_ISR_NSR": "TB_META_ZY1F",
+            # CB04A系列
+            "CB04A_VNIC": "TB_META_CB04A",
+        }
+        
+        # 使用 test_insert 目录
+        base_path = "test_insert"
+        
+        logger.info("\n" + "="*50)
+        logger.info("开始初始导入数据")
+        logger.info("-"*50)
+        
+        total_success = 0
+        total_failed = 0
+        successful_folders = []
+        failed_folders = []
+        
+        # 遍历所有文件夹
+        for folder_name in os.listdir(base_path):
+            folder_path = os.path.join(base_path, folder_name)
+            if not os.path.isdir(folder_path):
+                continue
+                
+            # 处理卫星数据文件夹
+            if folder_name in folder_table_mapping:
+                table_name = folder_table_mapping[folder_name]
+                logger.info(f"\n处理文件夹: {folder_name} -> {table_name}")
+                
+                success_count = 0
+                failed_count = 0
+                
+                # 处理文件夹中的所有JSON文件
+                for file_name in os.listdir(folder_path):
+                    if not file_name.endswith('.json'):
+                        continue
+                        
+                    file_path = os.path.join(folder_path, file_name)
+                    try:
+                        with open(file_path, 'r', encoding='utf-8') as f:
+                            data = json.load(f)
+                        
+                        if processor.mapper.insert_satellite_data(table_name, data):
+                            success_count += 1
+                            logger.info(f"✓ 成功导入: {file_name}")
+                        else:
+                            failed_count += 1
+                            logger.error(f"✗ 导入失败: {file_name}")
+                            
+                    except Exception as e:
+                        failed_count += 1
+                        logger.error(f"处理文件失败 {file_name}: {str(e)}")
+                
+                total_success += success_count
+                total_failed += failed_count
+                
+                if failed_count == 0:
+                    successful_folders.append((folder_name, success_count))
+                else:
+                    failed_folders.append((folder_name, success_count, failed_count))
+                
+                logger.info(f"文件夹 {folder_name} 处理完成: 成功 {success_count} 个, 失败 {failed_count} 个")
+            
+            # 处理图像数据文件夹
+            elif folder_name == "VIEW_META_BLOB":
+                logger.info(f"\n处理图像数据文件夹: {folder_name}")
+                success_count = 0
+                failed_count = 0
+                
+                for file_name in os.listdir(folder_path):
+                    if not file_name.endswith('.json'):
+                        continue
+                        
+                    file_path = os.path.join(folder_path, file_name)
+                    try:
+                        with open(file_path, 'r', encoding='utf-8') as f:
+                            data = json.load(f)
+                        
+                        if processor.mapper.insertGraphData(data):
+                            success_count += 1
+                            logger.info(f"✓ 成功导入图像数据: {file_name}")
+                        else:
+                            failed_count += 1
+                            logger.error(f"✗ 导入图像数据失败: {file_name}")
+                            
+                    except Exception as e:
+                        failed_count += 1
+                        logger.error(f"处理图像数据文件失败 {file_name}: {str(e)}")
+                
+                total_success += success_count
+                total_failed += failed_count
+                
+                if failed_count == 0:
+                    successful_folders.append((folder_name, success_count))
+                else:
+                    failed_folders.append((folder_name, success_count, failed_count))
+                
+                logger.info(f"图像数据处理完成: 成功 {success_count} 个, 失败 {failed_count} 个")
+        
+        # 输出总结信息
+        logger.info("\n" + "="*50)
+        logger.info("初始导入任务完成")
+        logger.info("-"*50)
+        logger.info(f"总计成功: {total_success} 个")
+        logger.info(f"总计失败: {total_failed} 个")
+        
+        if successful_folders:
+            logger.info("\n完全成功的文件夹:")
+            for folder, count in successful_folders:
+                logger.info(f"  ✓ {folder:<30} {count:>6} 条记录")
+        
+        if failed_folders:
+            logger.info("\n部分失败的文件夹:")
+            for folder, success, failed in failed_folders:
+                logger.info(f"  ✗ {folder:<30} 成功 {success:>6} 条, 失败 {failed:>6} 条")
+        
+        logger.info("="*50 + "\n")
+        
+    except Exception as e:
+        logger.error(f"初始导入任务错误: {str(e)}")
+
+def import_daily():
+    """设置每日导入任务"""
+    def daily_task():
+        try:
+            now = datetime.now()
+            logger.info(f"\n开始执行每日导入任务: {now.strftime('%Y-%m-%d %H:%M:%S')}")
+            
+            pool = create_pool()
+            processor = SatelliteDataProcess(pool)
+            
+            # 获取昨天的日期范围
+            yesterday = now - timedelta(days=1)
+            start_time = yesterday.replace(hour=0, minute=0, second=0)
+            end_time = yesterday.replace(hour=23, minute=59, second=59)
+            
+            # 遍历文件夹处理新数据
+            base_path = TARGET_PATH
+            for folder_name in os.listdir(base_path):
+                folder_path = os.path.join(base_path, folder_name)
+                if not os.path.isdir(folder_path):
+                    continue
+                    
+                if folder_name in folder_table_mapping:
+                    table_name = folder_table_mapping[folder_name]
+                    
+                    # 获取文件的最后修改时间在指定范围内的文件
+                    for file_name in os.listdir(folder_path):
+                        if not file_name.endswith('.json'):
+                            continue
+                            
+                        file_path = os.path.join(folder_path, file_name)
+                        file_mtime = datetime.fromtimestamp(os.path.getmtime(file_path))
+                        
+                        if start_time <= file_mtime <= end_time:
+                            try:
+                                with open(file_path, 'r', encoding='utf-8') as f:
+                                    data = json.load(f)
+                                
+                                if processor.mapper.insert_satellite_data(table_name, data):
+                                    logger.info(f"✓ 成功导入新数据: {file_name}")
+                                else:
+                                    logger.error(f"✗ 导入新数据失败: {file_name}")
+                                    
+                            except Exception as e:
+                                logger.error(f"处理新数据文件失败 {file_name}: {str(e)}")
+            
+            # 更新健康检查文件
+            health_file = os.path.join(TARGET_PATH, 'health_check.txt')
+            with open(health_file, 'w') as f:
+                f.write(f"Last import: {now.strftime('%Y-%m-%d %H:%M:%S')}")
+                
+        except Exception as e:
+            logger.error(f"每日导入任务错误: {str(e)}")
+    
+    # 设置定时任务
+    schedule.every().day.at("03:00").do(daily_task)
+    
+    logger.info("每日导入服务已启动，将在每天 03:00 执行")
+    
+    while True:
+        schedule.run_pending()
+        time.sleep(60)
+
 def main():
-    """
-    主函数，提供四种运行模式：
-    1. initial: 同步指定时间段的历史数据
-    2. daily: 设置定时任务，每天同步新增数据
-    3. graph: 同步图形数据到JSON文件
-    4. import: 从JSON文件导入图形数据到数据库
-    """
+    """主函数"""
     import argparse
     parser = argparse.ArgumentParser(description='数据同步工具')
-    parser.add_argument('mode', choices=['initial', 'daily', 'graph', 'import'], 
-                       help='运行模式: "initial"用于历史数据同步, "daily"用于每日同步任务, '
-                            '"graph"用于图形数据同步, "import"用于导入数据到数据库')
+    parser.add_argument('mode', choices=['initial', 'daily', 'graph', 'import', 'insert_initial', 'insert_daily'], 
+                       help='运行模式: initial-历史数据同步, daily-每日同步, graph-图形数据同步, '
+                            'import-导入数据到数据库, insert_initial-初始插入所有数据, insert_daily-每日定时插入新数据')
     
     args = parser.parse_args()
     
-    if args.mode in ['initial', 'daily']:
+    if args.mode == 'insert_initial':
+        import_initial()
+    elif args.mode == 'insert_daily':
+        import_daily()
+    elif args.mode in ['initial', 'daily']:
         sync_data(args.mode)
     elif args.mode == 'graph':
         sync_graph_data()
     elif args.mode == 'import':
-        import_graph_data()
+        import_folder_data()
 
 if __name__ == "__main__":
     main() 
