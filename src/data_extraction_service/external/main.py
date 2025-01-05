@@ -692,70 +692,100 @@ def import_initial():
         logger.error(f"初始导入任务错误: {str(e)}")
 
 def import_daily():
-    """设置每日导入任务"""
+    """设置每日导入任务，每天8点11分执行，检查前6天的所有新数据"""
     def daily_task():
         try:
             now = datetime.now()
-            logger.info(f"\n开始执行每日导入任务: {now.strftime('%Y-%m-%d %H:%M:%S')}")
+            logger.info(f"\n{'='*50}")
+            logger.info(f"开始执行每日导入任务: {now.strftime('%Y-%m-%d %H:%M:%S')}")
+            logger.info("-"*50)
             
-            pool = create_pool()
-            processor = SatelliteDataProcess(pool)
+            # 获取前6天的日期范围
+            end_time = now.replace(hour=23, minute=59, second=59)
+            start_time = (now - timedelta(days=6)).replace(hour=0, minute=0, second=0)
             
-            # 获取昨天的日期范围
-            yesterday = now - timedelta(days=1)
-            start_time = yesterday.replace(hour=0, minute=0, second=0)
-            end_time = yesterday.replace(hour=23, minute=59, second=59)
+            logger.info(f"检查时间范围: {start_time} 到 {end_time}")
             
-            # 遍历文件夹处理新数据
-            base_path = TARGET_PATH
-            for folder_name in os.listdir(base_path):
-                folder_path = os.path.join(base_path, folder_name)
-                if not os.path.isdir(folder_path):
-                    continue
+            # 定义需要处理的所有文件夹
+            folders = [
+                "GF1_WFV_YSDATA", "GF1_YSDATA", "GF1B_YSDATA", "GF1C_YSDATA", "GF1D_YSDATA",
+                "GF2_YSDATA", "GF5_AHSIDATA", "GF5_VIMSDATA", "GF6_WFV_DATA", "GF6_YSDATA",
+                "GF7_BWD_DATA", "GF7_MUX_DATA", "ZY301A_MUX_DATA", "ZY301A_NAD_DATA",
+                "ZY302A_MUX_DATA", "ZY302A_NAD_DATA", "ZY303A_MUX_DATA", "ZY303A_NAD_DATA",
+                "ZY02C_HRC_DATA", "ZY02C_PMS_DATA", "ZY1E_AHSI", "ZY1F_AHSI", "ZY1F_ISR_NSR",
+                "CB04A_VNIC", "VIEW_META_BLOB"
+            ]
+            
+            total_success = 0
+            total_failed = 0
+            successful_folders = []
+            failed_folders = []
+            
+            # 处理每个文件夹
+            for folder_name in folders:
+                try:
+                    logger.info(f"\n处理文件夹: {folder_name}")
                     
-                if folder_name in folder_table_mapping:
-                    table_name = folder_table_mapping[folder_name]
+                    # 调用 import_folder 函数处理单个文件夹
+                    result = import_folder(folder_name, start_time, end_time)
                     
-                    # 获取文件的最后修改时间在指定范围内的文件
-                    for file_name in os.listdir(folder_path):
-                        if not file_name.endswith('.json'):
-                            continue
-                            
-                        file_path = os.path.join(folder_path, file_name)
-                        file_mtime = datetime.fromtimestamp(os.path.getmtime(file_path))
+                    if isinstance(result, tuple):
+                        success_count, failed_count = result
+                        total_success += success_count
+                        total_failed += failed_count
                         
-                        if start_time <= file_mtime <= end_time:
-                            try:
-                                with open(file_path, 'r', encoding='utf-8') as f:
-                                    data = json.load(f)
-                                
-                                if processor.mapper.insert_satellite_data(table_name, data):
-                                    logger.info(f"✓ 成功导入新数据: {file_name}")
-                                else:
-                                    logger.error(f"✗ 导入新数据失败: {file_name}")
-                                    
-                            except Exception as e:
-                                logger.error(f"处理新数据文件失败 {file_name}: {str(e)}")
+                        if failed_count == 0:
+                            successful_folders.append((folder_name, success_count))
+                        else:
+                            failed_folders.append((folder_name, success_count, failed_count))
+                    
+                except Exception as e:
+                    logger.error(f"处理文件夹 {folder_name} 时出错: {str(e)}")
+                    failed_folders.append((folder_name, 0, 0))
+            
+            # 输出总结信息
+            task_end_time = datetime.now()
+            logger.info(f"\n{'='*50}")
+            logger.info(f"每日导入任务完成 - {task_end_time.strftime('%Y-%m-%d %H:%M:%S')}")
+            logger.info("-"*50)
+            logger.info(f"总计成功: {total_success} 个")
+            logger.info(f"总计失败: {total_failed} 个")
+            
+            if successful_folders:
+                logger.info("\n完全成功的文件夹:")
+                for folder, count in successful_folders:
+                    logger.info(f"  ✓ {folder:<30} {count:>6} 条记录")
+            
+            if failed_folders:
+                logger.info("\n部分失败的文件夹:")
+                for folder, success, failed in failed_folders:
+                    logger.info(f"  ✗ {folder:<30} 成功 {success:>6} 条, 失败 {failed:>6} 条")
+            
+            logger.info("="*50)
             
             # 更新健康检查文件
-            health_file = os.path.join(TARGET_PATH, 'health_check.txt')
-            with open(health_file, 'w') as f:
-                f.write(f"Last import: {now.strftime('%Y-%m-%d %H:%M:%S')}")
+            health_file = os.path.join("logs", 'daily_import_health.txt')
+            with open(health_file, 'w', encoding='utf-8') as f:
+                f.write(f"Last daily import: {task_end_time}\n")
+                f.write(f"Time range: {start_time} to {end_time}\n")
+                f.write(f"Total success: {total_success}\n")
+                f.write(f"Total failed: {total_failed}\n")
                 
         except Exception as e:
             logger.error(f"每日导入任务错误: {str(e)}")
     
-    # 设置定时任务
-    schedule.every().day.at("03:00").do(daily_task)
+    # 设置定时任务，每天凌晨8点11分执行
+    schedule.every().day.at("20:13").do(daily_task)
     
-    logger.info("每日导入服务已启动，将在每天 03:00 执行")
+    logger.info("每日导入服务已启动，将在每天 08:11 执行")
+    logger.info("将处理所有文件夹的前6天新数据")
     
     while True:
         schedule.run_pending()
         time.sleep(60)
 
-def import_folder(folder_name):
-    """处理单个文件夹的数据"""
+def import_folder(folder_name, start_time=None, end_time=None):
+    """处理单个文件夹的数据，可选指定时间范围"""
     try:
         # 获取当前日期时间作为任务标识
         task_start_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -830,6 +860,13 @@ def import_folder(folder_name):
                     continue
                     
                 file_path = os.path.join(folder_path, file_name)
+                
+                # 检查文件修改时间是否在指定范围内
+                if start_time and end_time:
+                    file_mtime = datetime.fromtimestamp(os.path.getmtime(file_path))
+                    if not (start_time <= file_mtime <= end_time):
+                        continue
+                
                 try:
                     with open(file_path, 'r', encoding='utf-8') as f:
                         data = json.load(f)
@@ -854,6 +891,13 @@ def import_folder(folder_name):
                     continue
                     
                 file_path = os.path.join(folder_path, file_name)
+                
+                # 检查文件修改时间是否在指定范围内
+                if start_time and end_time:
+                    file_mtime = datetime.fromtimestamp(os.path.getmtime(file_path))
+                    if not (start_time <= file_mtime <= end_time):
+                        continue
+                
                 try:
                     with open(file_path, 'r', encoding='utf-8') as f:
                         data = json.load(f)
@@ -885,8 +929,46 @@ def import_folder(folder_name):
             f.write(f"Success: {success_count}\n")
             f.write(f"Failed: {failed_count}\n")
         
+        # 文件夹处理完成后，填充 F_DATAID
+        if success_count > 0:  # 只有在成功插入数据后才执行
+            try:
+                fill_dataid_sql = f"""
+                    DECLARE
+                        v_max_value NUMBER;
+                    BEGIN
+                        SELECT NVL(MAX(F_DATAID), 0) INTO v_max_value 
+                        FROM JGF_GXFW.{table_name};
+
+                        FOR rec IN (
+                            SELECT ROWID AS row_id 
+                            FROM JGF_GXFW.{table_name} 
+                            WHERE F_DATAID IS NULL 
+                            ORDER BY F_RECEIVETIME ASC
+                        )
+                        LOOP
+                            v_max_value := v_max_value + 1;
+                            UPDATE JGF_GXFW.{table_name} 
+                            SET F_DATAID = v_max_value 
+                            WHERE ROWID = rec.row_id;
+                        END LOOP;
+                    END;
+                """
+                    
+                with pool.acquire() as conn:
+                    with conn.cursor() as cursor:
+                        cursor.execute(fill_dataid_sql)
+                        conn.commit()
+                        logger.info(f"✓ 成功填充 {table_name} 表的 F_DATAID 字段")
+                            
+            except Exception as e:
+                logger.error(f"填充 {table_name} 表的 F_DATAID 字段时出错: {str(e)}")
+                failed_count += 1
+        
+        return success_count, failed_count
+        
     except Exception as e:
         logger.error(f"处理文件夹 {folder_name} 错误: {str(e)}")
+        return 0, 0
 
 def main():
     """主函数"""
