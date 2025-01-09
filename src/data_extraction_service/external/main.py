@@ -312,6 +312,81 @@ def sync_data(sync_type):
                     except Exception as e:
                         logger.error(f"健康检查文件写入失败: {str(e)}")
                         
+                    # 在所有文件夹处理完成后，更新最新数据时间
+                    try:
+                        update_last_time_sql = """
+                        MERGE INTO TB_LASTDATE t
+                        USING (
+                            WITH LatestTime AS (
+                                SELECT MAX(F_RECEIVETIME) AS latest_recivetime
+                                FROM (
+                                    SELECT F_RECEIVETIME
+                                    FROM TB_META_GF1 WHERE F_RECEIVETIME IS NOT NULL
+                                    UNION ALL
+                                    SELECT F_RECEIVETIME
+                                    FROM TB_META_GF1B WHERE F_RECEIVETIME IS NOT NULL
+                                    UNION ALL  
+                                    SELECT F_RECEIVETIME
+                                    FROM TB_META_GF1BCD WHERE F_RECEIVETIME IS NOT NULL
+                                    UNION ALL  
+                                    SELECT F_RECEIVETIME
+                                    FROM TB_META_GF1C WHERE F_RECEIVETIME IS NOT NULL
+                                    UNION ALL  
+                                    SELECT F_RECEIVETIME
+                                    FROM TB_META_GF1D WHERE F_RECEIVETIME IS NOT NULL
+                                    UNION ALL  
+                                    SELECT F_RECEIVETIME
+                                    FROM TB_META_GF2 WHERE F_RECEIVETIME IS NOT NULL
+                                    UNION ALL  
+                                    SELECT F_RECEIVETIME
+                                    FROM TB_META_GF5 WHERE F_RECEIVETIME IS NOT NULL
+                                    UNION ALL  
+                                    SELECT F_RECEIVETIME
+                                    FROM TB_META_GF6 WHERE F_RECEIVETIME IS NOT NULL
+                                    UNION ALL  
+                                    SELECT F_RECEIVETIME
+                                    FROM TB_META_GF7 WHERE F_RECEIVETIME IS NOT NULL
+                                    UNION ALL  
+                                    SELECT F_RECEIVETIME
+                                    FROM TB_META_ZY02C WHERE F_RECEIVETIME IS NOT NULL
+                                    UNION ALL  
+                                    SELECT F_RECEIVETIME
+                                    FROM TB_META_ZY1E WHERE F_RECEIVETIME IS NOT NULL
+                                    UNION ALL  
+                                    SELECT F_RECEIVETIME
+                                    FROM TB_META_ZY1F WHERE F_RECEIVETIME IS NOT NULL
+                                    UNION ALL  
+                                    SELECT F_RECEIVETIME
+                                    FROM TB_META_ZY301 WHERE F_RECEIVETIME IS NOT NULL
+                                    UNION ALL  
+                                    SELECT F_RECEIVETIME
+                                    FROM TB_META_ZY302 WHERE F_RECEIVETIME IS NOT NULL
+                                    UNION ALL  
+                                    SELECT F_RECEIVETIME
+                                    FROM TB_META_ZY303 WHERE F_RECEIVETIME IS NOT NULL
+                                    UNION ALL  
+                                    SELECT F_RECEIVETIME
+                                    FROM TB_META_CB04A WHERE F_RECEIVETIME IS NOT NULL 
+                                )
+                            )
+                            SELECT TO_CHAR(latest_recivetime, 'YYYY-MM-DD HH24:MI:SS') AS latest_recivetime,
+                                   (SELECT MIN(ROWID) FROM TB_LASTDATE) AS target_rowid
+                            FROM LatestTime
+                        ) lt
+                        ON (t.ROWID = lt.target_rowid)
+                        WHEN MATCHED THEN
+                            UPDATE SET t.F_LASTTIME = lt.latest_recivetime
+                        """
+                        
+                        with pool.acquire() as conn:
+                            with conn.cursor() as cursor:
+                                cursor.execute(update_last_time_sql)
+                                conn.commit()
+                                logger.info("✓ 成功更新最新数据时间")
+                                
+                    except Exception as e:
+                        logger.error(f"更新最新数据时间失败: {str(e)}")
+                        
                 except Exception as e:
                     logger.error(f"每日同步任务执行错误: {str(e)}")
 
@@ -692,7 +767,7 @@ def import_initial():
         logger.error(f"初始导入任务错误: {str(e)}")
 
 def import_daily():
-    """设置每日导入任务，每天8点11分执行，检查前6天的所有新数据"""
+    """设置每日导入任务，每天凌晨4点执行，检查前24小时的数据"""
     def daily_task():
         try:
             now = datetime.now()
@@ -700,9 +775,9 @@ def import_daily():
             logger.info(f"开始执行每日导入任务: {now.strftime('%Y-%m-%d %H:%M:%S')}")
             logger.info("-"*50)
             
-            # 获取前6天的日期范围
-            end_time = now.replace(hour=23, minute=59, second=59)
-            start_time = (now - timedelta(days=6)).replace(hour=0, minute=0, second=0)
+            # 修改为检查前24小时的数据
+            end_time = now
+            start_time = now - timedelta(days=1)  # 改为1天前
             
             logger.info(f"检查时间范围: {start_time} 到 {end_time}")
             
@@ -771,14 +846,89 @@ def import_daily():
                 f.write(f"Total success: {total_success}\n")
                 f.write(f"Total failed: {total_failed}\n")
                 
+            # 在所有文件夹处理完成后，更新最新数据时间
+            try:
+                update_last_time_sql = """
+                MERGE INTO TB_LASTDATE t
+                USING (
+                    WITH LatestTime AS (
+                        SELECT MAX(F_RECEIVETIME) AS latest_recivetime
+                        FROM (
+                            SELECT F_RECEIVETIME
+                            FROM TB_META_GF1 WHERE F_RECEIVETIME IS NOT NULL
+                            UNION ALL
+                            SELECT F_RECEIVETIME
+                            FROM TB_META_GF1B WHERE F_RECEIVETIME IS NOT NULL
+                            UNION ALL  
+                            SELECT F_RECEIVETIME
+                            FROM TB_META_GF1BCD WHERE F_RECEIVETIME IS NOT NULL
+                            UNION ALL  
+                            SELECT F_RECEIVETIME
+                            FROM TB_META_GF1C WHERE F_RECEIVETIME IS NOT NULL
+                            UNION ALL  
+                            SELECT F_RECEIVETIME
+                            FROM TB_META_GF1D WHERE F_RECEIVETIME IS NOT NULL
+                            UNION ALL  
+                            SELECT F_RECEIVETIME
+                            FROM TB_META_GF2 WHERE F_RECEIVETIME IS NOT NULL
+                            UNION ALL  
+                            SELECT F_RECEIVETIME
+                            FROM TB_META_GF5 WHERE F_RECEIVETIME IS NOT NULL
+                            UNION ALL  
+                            SELECT F_RECEIVETIME
+                            FROM TB_META_GF6 WHERE F_RECEIVETIME IS NOT NULL
+                            UNION ALL  
+                            SELECT F_RECEIVETIME
+                            FROM TB_META_GF7 WHERE F_RECEIVETIME IS NOT NULL
+                            UNION ALL  
+                            SELECT F_RECEIVETIME
+                            FROM TB_META_ZY02C WHERE F_RECEIVETIME IS NOT NULL
+                            UNION ALL  
+                            SELECT F_RECEIVETIME
+                            FROM TB_META_ZY1E WHERE F_RECEIVETIME IS NOT NULL
+                            UNION ALL  
+                            SELECT F_RECEIVETIME
+                            FROM TB_META_ZY1F WHERE F_RECEIVETIME IS NOT NULL
+                            UNION ALL  
+                            SELECT F_RECEIVETIME
+                            FROM TB_META_ZY301 WHERE F_RECEIVETIME IS NOT NULL
+                            UNION ALL  
+                            SELECT F_RECEIVETIME
+                            FROM TB_META_ZY302 WHERE F_RECEIVETIME IS NOT NULL
+                            UNION ALL  
+                            SELECT F_RECEIVETIME
+                            FROM TB_META_ZY303 WHERE F_RECEIVETIME IS NOT NULL
+                            UNION ALL  
+                            SELECT F_RECEIVETIME
+                            FROM TB_META_CB04A WHERE F_RECEIVETIME IS NOT NULL 
+                        )
+                    )
+                    SELECT TO_CHAR(latest_recivetime, 'YYYY-MM-DD HH24:MI:SS') AS latest_recivetime,
+                           (SELECT MIN(ROWID) FROM TB_LASTDATE) AS target_rowid
+                    FROM LatestTime
+                ) lt
+                ON (t.ROWID = lt.target_rowid)
+                WHEN MATCHED THEN
+                    UPDATE SET t.F_LASTTIME = lt.latest_recivetime
+                """
+                
+                with pool.acquire() as conn:
+                    with conn.cursor() as cursor:
+                        cursor.execute(update_last_time_sql)
+                        conn.commit()
+                        logger.info("✓ 成功更新最新数据时间")
+                        
+            except Exception as e:
+                logger.error(f"更新最新数据时间失败: {str(e)}")
+                
         except Exception as e:
             logger.error(f"每日导入任务错误: {str(e)}")
     
-    # 设置定时任务，每天凌晨8点11分执行
-    schedule.every().day.at("20:13").do(daily_task)
+    # 修改为凌晨4点执行
+    schedule.every().day.at("04:00").do(daily_task)
     
-    logger.info("每日导入服务已启动，将在每天 08:11 执行")
-    logger.info("将处理所有文件夹的前6天新数据")
+    logger.info("每日导入服务已启动，将在每天 04:00 执行")
+    logger.info("将处理所有文件夹的前24小时新数据")
     
     while True:
         schedule.run_pending()
