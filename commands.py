@@ -9,6 +9,13 @@ def data_extraction_external():
     main()
     pass
 
+def shapeimgae_generator(schedule=False):
+    from src.shapeimage_generation_script.shapeimgae_generator import main_schedule, main
+    if schedule:
+        main_schedule()
+    else:
+        main()
+
 def run_web():
     from src.geocloudservice.web import main
     main()
