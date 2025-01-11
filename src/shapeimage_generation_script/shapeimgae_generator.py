@@ -9,20 +9,23 @@ import oracledb
 import src.config.config as config
 from src.utils.logger import logger, file_handler
 from src.geocloudservice.recommend import generateSqlQuery
+from src.shapeimage_generation_script.network_environment import NetworkEnvironment
+from src.shapeimage_generation_script.network_environment import NET_ENV
 
 file_handler.setLevel("WARNING")
 logger.addHandler(file_handler)
 
 BATCH_SIZE = 1000
-CURRENT_FILE_DIR = Path(__file__).resolve().parent()
-JAR_PATH = CURRENT_FILE_DIR.joinpath("Example","RBGdal.jar")
+CURRENT_FILE_DIR = Path(__file__).resolve().parent
+JAR_PATH = CURRENT_FILE_DIR.joinpath("Example", "RBGdal.jar")
 JAR_CWD = CURRENT_FILE_DIR.joinpath("Example")
 TABLE_LIST = list(config.NodeIdToNodeName.values())
 
-WHERE_SQL = """ F_SHAPEIMAGE IS NULL 
-            AND F_THUMIMAGE IS NOT NULL 
-            AND DBMS_LOB.GETLENGTH(F_THUMIMAGE) > 0 
-            AND F_SHAPE_DEL IS NULL """
+WHERE_SQL = """ b.F_SHAPEIMAGE IS NULL
+            AND b.F_THUMIMAGE IS NOT NULL
+            AND DBMS_LOB.GETLENGTH(b.F_THUMIMAGE) > 0
+            AND b.F_SHAPE_DEL IS NULL"""
+WHERE_SQL_INTER = WHERE_SQL.replace("b.F_THUMIMAGE", "t.F_THUMIMAGE")
 
 
 def get_null_shape_images_batch(cursor, batch_size=1000):
@@ -32,24 +35,42 @@ def get_null_shape_images_batch(cursor, batch_size=1000):
     """
     offset = 0
     while True:
-        cursor.execute(
-            f"""
-            SELECT F_DID, F_THUMIMAGE 
-            FROM TB_BAS_META_BLOB 
-            WHERE {WHERE_SQL}
-            OFFSET :offset ROWS FETCH NEXT :batch_size ROWS ONLY
-            """,
-            {"offset": offset, "batch_size": batch_size},
-        )
+        if NET_ENV == NetworkEnvironment.EXTERNAL:
+            sql = f"""
+                SELECT F_DID, F_THUMIMAGE
+                FROM TB_BAS_META_BLOB
+                WHERE {WHERE_SQL}
+                OFFSET :offset ROWS FETCH NEXT :batch_size ROWS ONLY
+                """
+        else:
+            sql = f"""
+                SELECT t.F_DID, t.F_THUMIMAGE
+                FROM VIEW_META_BLOB t
+                JOIN TB_BAS_META_BLOB b ON t.F_DID = b.F_DID
+                WHERE {WHERE_SQL_INTER}
+                OFFSET :offset ROWS FETCH NEXT :batch_size ROWS ONLY
+                """
+        cursor.execute(sql, {"offset": offset, "batch_size": batch_size})
         results = cursor.fetchall()
         if len(results) == 0:
             break
         yield results
         offset += batch_size
 
+
 def get_null_shape_images_count(cursor):
-    cursor.execute(f"SELECT COUNT(*) FROM TB_BAS_META_BLOB WHERE {WHERE_SQL}")
+    if NET_ENV == NetworkEnvironment.EXTERNAL:
+        cursor.execute(f"SELECT COUNT(*) FROM TB_BAS_META_BLOB WHERE {WHERE_SQL}")
+    else:
+        cursor.execute(
+            f"""
+            SELECT COUNT(*)
+            FROM VIEW_META_BLOB t
+            JOIN TB_BAS_META_BLOB b ON t.F_DID = b.F_DID
+            WHERE {WHERE_SQL_INTER}"""
+        )
     return cursor.fetchone()[0]
+
 
 def get_shapeimage_position(did, cursor):
     data_name = [
@@ -112,7 +133,9 @@ def get_shapeimage(did, input_path: Path, output_path: Path, pos: dict):
         logger.error(f"did: {did}, java execution error: {err}")
         return None
 
-    logger.info(f"did: {did}, shapeimage generated, cost {time.perf_counter() - jar_st_time:.2f}s")
+    logger.info(
+        f"did: {did}, shapeimage generated, cost {time.perf_counter() - jar_st_time:.2f}s"
+    )
     try:
         with open(output_path, "rb") as file:
             shapeimage_data = file.read()
@@ -159,7 +182,7 @@ def process_batch(batch, conn):
     try:
         for row in batch:
             did, thumimage_data = row
-            logger.info(f"get did: {did}")
+            logger.info(f"did: {did}, processing...")
 
             pos = get_shapeimage_position(did, proc_cur)
             if pos is None:
@@ -230,11 +253,12 @@ def main():
 
 def main_schedule():
     import schedule
+
     schedule.every().day.at("03:00").do(main)
     while True:
         schedule.run_pending()
         time.sleep(60)
-    
-    
+
+
 if __name__ == "__main__":
     main()
