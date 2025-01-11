@@ -1,5 +1,6 @@
 import subprocess
 import os
+import sys
 from pathlib import Path
 import time
 from datetime import timedelta
@@ -31,14 +32,15 @@ WHERE_SQL_INTER = WHERE_SQL.replace("b.F_THUMIMAGE", "t.F_THUMIMAGE")
 def get_null_shape_images_batch(cursor, batch_size=1000):
     """
     获取所有未生成shapeimage的图片
-    生成器，每次返回batch_size条数据
+    生成器, 每次返回batch_size条数据
+    did 为可选参数, 用于单独处理某一条数据(测试用)
     """
     offset = 0
     while True:
         if NET_ENV == NetworkEnvironment.EXTERNAL:
             sql = f"""
                 SELECT F_DID, F_THUMIMAGE
-                FROM TB_BAS_META_BLOB
+                FROM TB_BAS_META_BLOB b
                 WHERE {WHERE_SQL}
                 OFFSET :offset ROWS FETCH NEXT :batch_size ROWS ONLY
                 """
@@ -60,7 +62,7 @@ def get_null_shape_images_batch(cursor, batch_size=1000):
 
 def get_null_shape_images_count(cursor):
     if NET_ENV == NetworkEnvironment.EXTERNAL:
-        cursor.execute(f"SELECT COUNT(*) FROM TB_BAS_META_BLOB WHERE {WHERE_SQL}")
+        cursor.execute(f"SELECT COUNT(*) FROM TB_BAS_META_BLOB b WHERE {WHERE_SQL}")
     else:
         cursor.execute(
             f"""
@@ -261,4 +263,10 @@ def main_schedule():
 
 
 if __name__ == "__main__":
+    if len(sys.argv) > 1:
+        # 直接运行脚本时，如果有参数，则只处理该单条数据
+        did = sys.argv[1]
+        WHERE_SQL = f"b.F_DID = {did}"
+        WHERE_SQL_INTER = f"t.F_DID = {did}"
     main()
+    
