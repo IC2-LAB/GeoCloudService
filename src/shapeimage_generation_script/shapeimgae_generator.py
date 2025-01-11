@@ -22,10 +22,12 @@ JAR_PATH = CURRENT_FILE_DIR.joinpath("Example", "RBGdal.jar")
 JAR_CWD = CURRENT_FILE_DIR.joinpath("Example")
 TABLE_LIST = list(config.NodeIdToNodeName.values())
 
-WHERE_SQL = """ b.F_SHAPEIMAGE IS NULL
-            AND b.F_THUMIMAGE IS NOT NULL
-            AND DBMS_LOB.GETLENGTH(b.F_THUMIMAGE) > 0
-            AND b.F_SHAPE_DEL IS NULL"""
+WHERE_SQL = """
+    b.F_SHAPEIMAGE IS NULL
+    AND b.F_THUMIMAGE IS NOT NULL
+    AND DBMS_LOB.GETLENGTH(b.F_THUMIMAGE) > 0
+    AND b.F_SHAPE_DEL IS NULL
+    """
 WHERE_SQL_INTER = WHERE_SQL.replace("b.F_THUMIMAGE", "t.F_THUMIMAGE")
 
 
@@ -48,7 +50,7 @@ def get_null_shape_images_batch(cursor, batch_size=1000):
             sql = f"""
                 SELECT t.F_DID, t.F_THUMIMAGE
                 FROM VIEW_META_BLOB t
-                JOIN TB_BAS_META_BLOB b ON t.F_DID = b.F_DID
+                LEFT JOIN TB_BAS_META_BLOB b ON t.F_DID = b.F_DID
                 WHERE {WHERE_SQL_INTER}
                 OFFSET :offset ROWS FETCH NEXT :batch_size ROWS ONLY
                 """
@@ -68,7 +70,7 @@ def get_null_shape_images_count(cursor):
             f"""
             SELECT COUNT(*)
             FROM VIEW_META_BLOB t
-            JOIN TB_BAS_META_BLOB b ON t.F_DID = b.F_DID
+            LEFT JOIN TB_BAS_META_BLOB b ON t.F_DID = b.F_DID
             WHERE {WHERE_SQL_INTER}"""
         )
     return cursor.fetchone()[0]
@@ -147,12 +149,19 @@ def get_shapeimage(did, input_path: Path, output_path: Path, pos: dict):
         return None
 
 
-def add_shape_del(did, proc_cur, message=""):
+def add_shape_del(did, cursor, message=""):
     try:
-        proc_cur.execute(
+        cursor.execute(
             "UPDATE TB_BAS_META_BLOB SET F_SHAPE_DEL = 1 WHERE F_DID = :1", [did]
         )
-        logger.info(f"did: {did} F_SHAPE_DEL set to 1")
+        if cursor.rowcount == 0:
+            cursor.execute(
+                "INSERT INTO TB_BAS_META_BLOB (F_DID, F_SHAPE_DEL, F_SHAPE_DEL_MESSAGE) VALUES (:1, 1, :2)",
+                [did, message],
+            )
+            logger.warning(f"did: {did}, not in table, F_SHAPE_DEL inserted")
+        else:
+            logger.info(f"did: {did} F_SHAPE_DEL set to 1")
     except Exception as e:
         logger.error(f"did: {did}, update shape_del error: {e}")
 
@@ -163,7 +172,14 @@ def add_blob(did, cursor, shapeimage_data):
             "UPDATE TB_BAS_META_BLOB SET F_SHAPEIMAGE = :1 WHERE F_DID = :2",
             [shapeimage_data, did],
         )
-        logger.info(f"did: {did}, shapeimage updated")
+        if cursor.rowcount == 0:
+            cursor.execute(
+                "INSERT INTO TB_BAS_META_BLOB (F_DID, F_SHAPEIMAGE) VALUES (:1, :2)",
+                [did, shapeimage_data],
+            )
+            logger.warning(f"did: {did}, not in table, shapeimage inserted")
+        else:
+            logger.info(f"did: {did}, shapeimage updated")
     except Exception as e:
         logger.error(f"did: {did}, update shapeimage error: {e}")
 
@@ -269,4 +285,3 @@ if __name__ == "__main__":
         WHERE_SQL = f"b.F_DID = {did}"
         WHERE_SQL_INTER = f"t.F_DID = {did}"
     main()
-    
