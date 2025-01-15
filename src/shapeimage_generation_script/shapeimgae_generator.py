@@ -59,7 +59,7 @@ def get_null_shape_images_batch(cursor, batch_size=1000):
         if len(results) == 0:
             break
         yield results
-        offset += batch_size
+        # offset += batch_size
 
 
 def get_null_shape_images_count(cursor):
@@ -263,6 +263,11 @@ def main():
         logger.error(
             f"[main] error: {type(e).__name__} {e}\ntraceback: {traceback.format_exc()}"
         )
+        
+    except KeyboardInterrupt:
+        logger.warning(f"[main] interrupted by keyboard")
+        conn.commit()
+        
     finally:
         query_cur.close()
         conn.close()
