@@ -16,7 +16,7 @@ from src.shapeimage_generation_script.network_environment import NET_ENV
 file_handler.setLevel("WARNING")
 logger.addHandler(file_handler)
 
-BATCH_SIZE = 1000
+BATCH_SIZE = 5000
 CURRENT_FILE_DIR = Path(__file__).resolve().parent
 JAR_PATH = CURRENT_FILE_DIR.joinpath("Example", "RBGdal.jar")
 JAR_CWD = CURRENT_FILE_DIR.joinpath("Example")
@@ -25,7 +25,7 @@ TABLE_LIST = list(config.NodeIdToNodeName.values())
 WHERE_SQL = """
     b.F_SHAPEIMAGE IS NULL
     AND b.F_THUMIMAGE IS NOT NULL
-    AND DBMS_LOB.GETLENGTH(b.F_THUMIMAGE) > 0
+    AND DBMS_LOB.GETLENGTH(b.F_THUMIMAGE) > 100
     AND b.F_SHAPE_DEL IS NULL
     """
 WHERE_SQL_INTER = WHERE_SQL.replace("b.F_THUMIMAGE", "t.F_THUMIMAGE")
@@ -33,33 +33,34 @@ WHERE_SQL_INTER = WHERE_SQL.replace("b.F_THUMIMAGE", "t.F_THUMIMAGE")
 
 def get_null_shape_images_batch(cursor, batch_size=1000):
     """
-    获取所有未生成shapeimage的图片
-    生成器, 每次返回batch_size条数据
+    获取未生成shapeimage的记录
+    每次查询batch_size条数据，返回生成器
     did 为可选参数, 用于单独处理某一条数据(测试用)
     """
-    offset = 0
+    if NET_ENV == NetworkEnvironment.EXTERNAL:
+        sql = f"""
+            SELECT F_DID, F_THUMIMAGE
+            FROM TB_BAS_META_BLOB b
+            WHERE {WHERE_SQL}
+            FETCH NEXT :batch_size ROWS ONLY
+            """
+    else:
+        sql = f"""
+            SELECT t.F_DID, t.F_THUMIMAGE
+            FROM VIEW_META_BLOB t
+            LEFT JOIN TB_BAS_META_BLOB b ON t.F_DID = b.F_DID
+            WHERE {WHERE_SQL_INTER}
+            FETCH NEXT :batch_size ROWS ONLY
+            """
+    cursor.execute(sql, {"batch_size": batch_size})
+    if cursor.rowcount == 0:
+        return None
+
     while True:
-        if NET_ENV == NetworkEnvironment.EXTERNAL:
-            sql = f"""
-                SELECT F_DID, F_THUMIMAGE
-                FROM TB_BAS_META_BLOB b
-                WHERE {WHERE_SQL}
-                OFFSET :offset ROWS FETCH NEXT :batch_size ROWS ONLY
-                """
-        else:
-            sql = f"""
-                SELECT t.F_DID, t.F_THUMIMAGE
-                FROM VIEW_META_BLOB t
-                LEFT JOIN TB_BAS_META_BLOB b ON t.F_DID = b.F_DID
-                WHERE {WHERE_SQL_INTER}
-                OFFSET :offset ROWS FETCH NEXT :batch_size ROWS ONLY
-                """
-        cursor.execute(sql, {"offset": offset, "batch_size": batch_size})
-        results = cursor.fetchall()
-        if len(results) == 0:
+        result = cursor.fetchone()
+        if result is None:
             break
-        yield results
-        # offset += batch_size
+        yield result
 
 
 def get_null_shape_images_count(cursor):
@@ -95,7 +96,7 @@ def get_shapeimage_position(did, cursor):
         res = cursor.fetchone()
         if res is None:
             logger.error(f"did: {did}, no position data")
-            return None  # 一般是航片图
+            return None
         columns = [col[0] for col in cursor.description]
         dict_res = dict(zip(columns, map(str, res)))
         logger.info(f"did: {did}, get position successfully")
@@ -196,8 +197,8 @@ def create_dbconn():
 
 
 def process_batch(batch, conn):
-    proc_cur = conn.cursor()
     try:
+        proc_cur = conn.cursor()
         for row in batch:
             did, thumimage_data = row
             logger.info(f"did: {did}, processing...")
@@ -230,10 +231,8 @@ def process_batch(batch, conn):
             add_blob(did, proc_cur, shapeimage_data)
             temp_image_path.unlink()
             output_image_path.unlink()
+            conn.commit()
 
-        # 处理完一个批次后提交
-        conn.commit()
-        logger.info("[process_batch] commit successfully! **** ")
     except Exception as e:
         conn.rollback()
         logger.error(
@@ -248,26 +247,28 @@ def main():
     main_st_time = time.time()
     os.chdir(JAR_CWD)
     Path("./tmp").mkdir(parents=True, exist_ok=True)
+    os.system("del /Q ./tmp/* 2>nul")
 
     conn = create_dbconn()
     query_cur = conn.cursor()
     try:
         logger.warning(f"[main] total count: {get_null_shape_images_count(query_cur)}")
-        gen = get_null_shape_images_batch(query_cur, BATCH_SIZE)
         while True:
-            process_batch(next(gen), conn)
-    except StopIteration:
+            batch = get_null_shape_images_batch(query_cur, BATCH_SIZE)
+            if batch is None:
+                break
+            process_batch(batch, conn)
         logger.info(f"[main] all done")
 
     except Exception as e:
         logger.error(
             f"[main] error: {type(e).__name__} {e}\ntraceback: {traceback.format_exc()}"
         )
-        
+
     except KeyboardInterrupt:
         logger.warning(f"[main] interrupted by keyboard")
         conn.commit()
-        
+
     finally:
         query_cur.close()
         conn.close()
