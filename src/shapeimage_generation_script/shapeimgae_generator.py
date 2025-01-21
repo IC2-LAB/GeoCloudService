@@ -21,6 +21,7 @@ CURRENT_FILE_DIR = Path(__file__).resolve().parent
 JAR_PATH = CURRENT_FILE_DIR.joinpath("Example", "RBGdal.jar")
 JAR_CWD = CURRENT_FILE_DIR.joinpath("Example")
 TABLE_LIST = list(config.NodeIdToNodeName.values())
+TABLE_LIST.extend(["TB_META_GF1" + c for c in ["B", "C", "D"]])
 
 WHERE_SQL = """
     b.F_SHAPEIMAGE IS NULL
@@ -95,7 +96,13 @@ def get_shapeimage_position(did, cursor):
         cursor.execute(sql, did=did)
         res = cursor.fetchone()
         if res is None:
+            # 没有此DID的位置信息
+            # 可能是 [ 任何表都没有 | TB_META_HANGPIAN航片图 | TB_MATE_YIBANTU一般图? ]
             logger.error(f"did: {did}, no position data")
+            return None
+        if any([x is None for x in res]):
+            # 位置信息有缺失（一般是全空）
+            logger.error(f"did: {did}, position data is None")
             return None
         columns = [col[0] for col in cursor.description]
         dict_res = dict(zip(columns, map(str, res)))
@@ -126,6 +133,10 @@ def get_shapeimage(did, input_path: Path, output_path: Path, pos: dict):
         if result.stderr:
             raise subprocess.CalledProcessError(
                 result.returncode, result.args, result.stderr
+            )
+        if "failures" in result.stdout:
+            raise subprocess.CalledProcessError(
+                result.returncode, result.args, result.stdout
             )
 
     except subprocess.CalledProcessError as e:
