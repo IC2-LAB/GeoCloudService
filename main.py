@@ -8,11 +8,6 @@ def main():
     """主函数"""
     parser = argparse.ArgumentParser(description='GeoCloud Backend Service')
     
-    # 如果是服务相关命令，直接处理
-    if len(sys.argv) > 1 and sys.argv[1] in ['install', 'remove', 'start', 'stop', 'restart', 'status']:
-        win32serviceutil.HandleCommandLine(DailySyncService)
-        return
-
     # 添加子命令解析器
     subparsers = parser.add_subparsers(dest='service', help='选择服务类型')
     
@@ -20,24 +15,22 @@ def main():
     external_parser = subparsers.add_parser('external')
     external_parser.add_argument('mode', 
                                choices=['initial', 'daily', 'graph', 'import', 'insert', 'insert_initial', 'insert_daily'],
-                               help='运行模式: initial-历史数据同步, daily-每日同步, graph-图形数据同步, '
-                                    'import-导入数据到数据库, insert-插入指定文件夹, '
-                                    'insert_initial-初始插入所有数据, insert_daily-每日定时插入新数据')
+                               help='运行模式')
     
-    # 添加 internal 子命令
-    internal_parser = subparsers.add_parser('internal')
-    
-    # 添加 web 子命令
-    web_parser = subparsers.add_parser('web')
+    # 为 insert 模式添加文件夹参数
+    external_parser.add_argument('folder_name', nargs='?', default=None,
+                               help='要处理的文件夹名称 (仅 insert 模式需要)')
     
     args = parser.parse_args()
     
-    if args.service == 'internal':
-        commands.data_extraction_internal()
-    elif args.service == 'external':
-        commands.data_extraction_external(args.mode)
-    elif args.service == 'web':
-        commands.run_web()
+    if args.service == 'external':
+        if args.mode == 'insert':
+            if not args.folder_name:
+                parser.error("insert 模式需要指定文件夹名称")
+            from src.data_extraction_service.external.main import import_folder
+            import_folder(args.folder_name)
+        else:
+            commands.data_extraction_external(args.mode)
 
 if __name__ == '__main__':
     main()

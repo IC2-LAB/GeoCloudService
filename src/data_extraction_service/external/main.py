@@ -503,7 +503,7 @@ def import_folder_data():
         }
         
         # 基础数据目录
-        base_path = "test_insert"
+        # base_path = "test_insert"
         
         logger.info("\n" + "="*50)
         logger.info("开始导入文件夹数据")
@@ -770,6 +770,8 @@ def import_daily():
     """设置每日导入任务，每天凌晨4点执行，检查前24小时的数据"""
     def daily_task():
         try:
+            pool = create_pool()  
+            processor = SatelliteDataProcess(pool)
             now = datetime.now()
             logger.info(f"\n{'='*50}")
             logger.info(f"开始执行每日导入任务: {now.strftime('%Y-%m-%d %H:%M:%S')}")
@@ -849,67 +851,68 @@ def import_daily():
             # 在所有文件夹处理完成后，更新最新数据时间
             try:
                 update_last_time_sql = """
-                MERGE INTO TB_LASTDATE t
-                USING (
+                    MERGE INTO TB_LASTDATE t
+                    USING (
                     WITH LatestTime AS (
                         SELECT MAX(F_RECEIVETIME) AS latest_recivetime
                         FROM (
-                            SELECT F_RECEIVETIME
-                            FROM TB_META_GF1 WHERE F_RECEIVETIME IS NOT NULL
-                            UNION ALL
-                            SELECT F_RECEIVETIME
-                            FROM TB_META_GF1B WHERE F_RECEIVETIME IS NOT NULL
-                            UNION ALL  
-                            SELECT F_RECEIVETIME
-                            FROM TB_META_GF1BCD WHERE F_RECEIVETIME IS NOT NULL
-                            UNION ALL  
-                            SELECT F_RECEIVETIME
-                            FROM TB_META_GF1C WHERE F_RECEIVETIME IS NOT NULL
-                            UNION ALL  
-                            SELECT F_RECEIVETIME
-                            FROM TB_META_GF1D WHERE F_RECEIVETIME IS NOT NULL
-                            UNION ALL  
-                            SELECT F_RECEIVETIME
-                            FROM TB_META_GF2 WHERE F_RECEIVETIME IS NOT NULL
-                            UNION ALL  
-                            SELECT F_RECEIVETIME
-                            FROM TB_META_GF5 WHERE F_RECEIVETIME IS NOT NULL
-                            UNION ALL  
-                            SELECT F_RECEIVETIME
-                            FROM TB_META_GF6 WHERE F_RECEIVETIME IS NOT NULL
-                            UNION ALL  
-                            SELECT F_RECEIVETIME
-                            FROM TB_META_GF7 WHERE F_RECEIVETIME IS NOT NULL
-                            UNION ALL  
-                            SELECT F_RECEIVETIME
-                            FROM TB_META_ZY02C WHERE F_RECEIVETIME IS NOT NULL
-                            UNION ALL  
-                            SELECT F_RECEIVETIME
-                            FROM TB_META_ZY1E WHERE F_RECEIVETIME IS NOT NULL
-                            UNION ALL  
-                            SELECT F_RECEIVETIME
-                            FROM TB_META_ZY1F WHERE F_RECEIVETIME IS NOT NULL
-                            UNION ALL  
-                            SELECT F_RECEIVETIME
-                            FROM TB_META_ZY301 WHERE F_RECEIVETIME IS NOT NULL
-                            UNION ALL  
-                            SELECT F_RECEIVETIME
-                            FROM TB_META_ZY302 WHERE F_RECEIVETIME IS NOT NULL
-                            UNION ALL  
-                            SELECT F_RECEIVETIME
-                            FROM TB_META_ZY303 WHERE F_RECEIVETIME IS NOT NULL
-                            UNION ALL  
-                            SELECT F_RECEIVETIME
-                            FROM TB_META_CB04A WHERE F_RECEIVETIME IS NOT NULL 
+                        SELECT F_RECEIVETIME
+                        FROM TB_META_GF1 WHERE F_RECEIVETIME IS NOT NULL
+                        UNION ALL
+                        SELECT F_RECEIVETIME
+                        FROM TB_META_GF1B WHERE F_RECEIVETIME IS NOT NULL
+                        UNION ALL  
+                        SELECT F_RECEIVETIME
+                        FROM TB_META_GF1BCD WHERE F_RECEIVETIME IS NOT NULL
+                        UNION ALL  
+                        SELECT F_RECEIVETIME
+                        FROM TB_META_GF1C WHERE F_RECEIVETIME IS NOT NULL
+                        UNION ALL  
+                        SELECT F_RECEIVETIME
+                        FROM TB_META_GF1D WHERE F_RECEIVETIME IS NOT NULL
+                        UNION ALL  
+                        SELECT F_RECEIVETIME
+                        FROM TB_META_GF2 WHERE F_RECEIVETIME IS NOT NULL
+                        UNION ALL  
+                        SELECT F_RECEIVETIME
+                        FROM TB_META_GF5 WHERE F_RECEIVETIME IS NOT NULL
+                        UNION ALL  
+                        SELECT F_RECEIVETIME
+                        FROM TB_META_GF6 WHERE F_RECEIVETIME IS NOT NULL
+                        UNION ALL  
+                        SELECT F_RECEIVETIME
+                        FROM TB_META_GF7 WHERE F_RECEIVETIME IS NOT NULL
+                        UNION ALL  
+                        SELECT F_RECEIVETIME
+                        FROM TB_META_ZY02C WHERE F_RECEIVETIME IS NOT NULL
+                        UNION ALL  
+                        SELECT F_RECEIVETIME
+                        FROM TB_META_ZY1E WHERE F_RECEIVETIME IS NOT NULL
+                        UNION ALL  
+                        SELECT F_RECEIVETIME
+                        FROM TB_META_ZY1F WHERE F_RECEIVETIME IS NOT NULL
+                        UNION ALL  
+                        SELECT F_RECEIVETIME
+                        FROM TB_META_ZY301 WHERE F_RECEIVETIME IS NOT NULL
+                        UNION ALL  
+                        SELECT F_RECEIVETIME
+                        FROM TB_META_ZY302 WHERE F_RECEIVETIME IS NOT NULL
+                        UNION ALL  
+                        SELECT F_RECEIVETIME
+                        FROM TB_META_ZY303 WHERE F_RECEIVETIME IS NOT NULL
+                        UNION ALL  
+                        SELECT F_RECEIVETIME
+                        FROM TB_META_CB04A WHERE F_RECEIVETIME IS NOT NULL 
                         )
                     )
                     SELECT TO_CHAR(latest_recivetime, 'YYYY-MM-DD HH24:MI:SS') AS latest_recivetime,
-                           (SELECT MIN(ROWID) FROM TB_LASTDATE) AS target_rowid
+                            (SELECT MIN(ROWID) FROM TB_LASTDATE) AS target_rowid
                     FROM LatestTime
-                ) lt
-                ON (t.ROWID = lt.target_rowid)
-                WHEN MATCHED THEN
+                    ) lt
+                    ON (t.ROWID = lt.target_rowid)
+                    WHEN MATCHED THEN
                     UPDATE SET t.F_LASTTIME = lt.latest_recivetime
+
                 """
                 
                 with pool.acquire() as conn:
@@ -917,6 +920,30 @@ def import_daily():
                         cursor.execute(update_last_time_sql)
                         conn.commit()
                         logger.info("✓ 成功更新最新数据时间")
+                        # 修改以下三表的F_SATELLITEID字段：TB_META_GF7、TB_META_ZY302、TB_META_ZY303
+                        update_sqls = [
+                            """
+                            UPDATE TB_META_GF7 tmg
+                            SET tmg.F_SATELLITEID = 'GF7'
+                            WHERE tmg.F_SATELLITEID = 'GF7-1'
+                            """,
+                            """
+                            UPDATE TB_META_ZY302 tmz
+                            SET tmz.F_SATELLITEID = 'ZY302'
+                            WHERE tmz.F_SATELLITEID = 'ZY3-2'
+                            """,
+                            """
+                            UPDATE TB_META_ZY303 tmz
+                            SET tmz.F_SATELLITEID = 'ZY303'
+                            WHERE tmz.F_SATELLITEID = 'ZY3-3'
+                            """
+                        ]
+                        
+                        for sql in update_sqls:
+                            cursor.execute(sql)
+                            logger.info("✓ 成功修改以下三表的F_SATELLITEID字段：TB_META_GF7、TB_META_ZY302、TB_META_ZY303")
+
+                        conn.commit()
                         
             except Exception as e:
                 logger.error(f"更新最新数据时间失败: {str(e)}")
@@ -989,7 +1016,7 @@ def import_folder(folder_name, start_time=None, end_time=None):
         
         # 使用 Y 盘路径
         base_path = r"Y:\shareJGF\data\WEIXING_BUPTBACKUP"
-        base_path = "test_insert"
+        # base_path = "test_insert"
         folder_path = os.path.join(base_path, folder_name)
         
         if not os.path.exists(folder_path):
