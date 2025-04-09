@@ -7,191 +7,191 @@ class OrderAnalyzer:
     def __init__(self, conn):
         self.conn = conn
         self.cursor = conn.cursor()
+
+    # ... 保留原有方法 ...
+
+    def get_user_detailed_stats(self, user_id: str) -> Dict[str, Any]:
+        """获取单个用户的详细统计信息
         
-    def get_basic_stats(self) -> Dict[str, Any]:
-        """获取基本统计信息"""
-        # 1. 总订单数和用户数
+        Args:
+            user_id: 用户ID
+            
+        Returns:
+            Dict包含用户的详细统计信息
+        """
+        # 1. 用户基本订单信息
         self.cursor.execute("""
             SELECT 
                 COUNT(*) as total_orders,
-                COUNT(DISTINCT F_USERID) as total_users,
-                COUNT(DISTINCT F_SATELLITE) as total_satellites
+                MIN(F_CREATTIME) as first_order_time,
+                MAX(F_CREATTIME) as last_order_time,
+                COUNT(DISTINCT F_SATELLITE) as used_satellites,
+                COUNT(DISTINCT F_PROVINCESPACE) as covered_provinces,
+                AVG(F_CLOUDAMOUNT) as avg_cloud_amount,
+                AVG(F_DATASIZEKB) as avg_data_size,
+                COUNT(DISTINCT F_DATATYPE) as data_types_used
             FROM TF_ORDER
-        """)
-        total_stats = dict(zip(['total_orders', 'total_users', 'total_satellites'], 
-                             self.cursor.fetchone()))
+            WHERE F_USERID = :user_id
+        """, {'user_id': user_id})
         
-        # 2. 用户订单分布
-        self.cursor.execute("""
-            SELECT 
-                F_USERID,
-                COUNT(*) as order_count,
-                MIN(F_CREATTIME) as first_order,
-                MAX(F_CREATTIME) as last_order
-            FROM TF_ORDER
-            GROUP BY F_USERID
-            ORDER BY order_count DESC
-        """)
-        user_stats = self.cursor.fetchall()
+        basic_stats = dict(zip([
+            'total_orders', 'first_order_time', 'last_order_time', 
+            'used_satellites', 'covered_provinces', 'avg_cloud_amount',
+            'avg_data_size', 'data_types_used'
+        ], self.cursor.fetchone()))
         
-        # 3. 卫星类型分布
+        # 2. 最喜欢的卫星及其使用频率
         self.cursor.execute("""
             SELECT 
                 F_SATELLITE,
                 COUNT(*) as usage_count,
-                COUNT(DISTINCT F_USERID) as user_count
+                AVG(F_CLOUDAMOUNT) as avg_cloud,
+                AVG(F_DATASIZEKB) as avg_size
             FROM TF_ORDER
-            WHERE F_SATELLITE IS NOT NULL
+            WHERE F_USERID = :user_id
+                AND F_SATELLITE IS NOT NULL
             GROUP BY F_SATELLITE
             ORDER BY usage_count DESC
-        """)
-        satellite_stats = self.cursor.fetchall()
+        """, {'user_id': user_id})
         
-        # 4. 时间分布
+        favorite_satellites = [dict(zip([
+            'satellite', 'usage_count', 'avg_cloud', 'avg_size'
+        ], row)) for row in self.cursor.fetchall()]
+        
+        # 3. 地理偏好分析
         self.cursor.execute("""
             SELECT 
-                EXTRACT(YEAR FROM F_CREATTIME) as year,
-                EXTRACT(MONTH FROM F_CREATTIME) as month,
-                COUNT(*) as order_count,
-                COUNT(DISTINCT F_USERID) as active_users
-            FROM TF_ORDER
-            GROUP BY 
-                EXTRACT(YEAR FROM F_CREATTIME),
-                EXTRACT(MONTH FROM F_CREATTIME)
-            ORDER BY year, month
-        """)
-        time_stats = self.cursor.fetchall()
-        
-        return {
-            "basic_stats": total_stats,
-            "user_stats": user_stats,
-            "satellite_stats": satellite_stats,
-            "time_stats": time_stats
-        }
-    
-    def get_user_preferences(self) -> Dict[str, Any]:
-        """分析用户偏好"""
-        # 1. 用户卫星偏好
-        self.cursor.execute("""
-            SELECT 
-                F_USERID,
-                F_SATELLITE,
-                COUNT(*) as usage_count
-            FROM TF_ORDER
-            WHERE F_SATELLITE IS NOT NULL
-            GROUP BY F_USERID, F_SATELLITE
-            ORDER BY F_USERID, usage_count DESC
-        """)
-        satellite_preferences = self.cursor.fetchall()
-        
-        # 2. 用户地区偏好
-        self.cursor.execute("""
-            SELECT 
-                F_USERID,
                 F_PROVINCESPACE,
-                COUNT(*) as region_count
+                COUNT(*) as region_count,
+                AVG(F_CLOUDAMOUNT) as avg_cloud,
+                COUNT(DISTINCT F_SATELLITE) as satellite_types
             FROM TF_ORDER
-            WHERE F_PROVINCESPACE IS NOT NULL
-            GROUP BY F_USERID, F_PROVINCESPACE
-            ORDER BY F_USERID, region_count DESC
-        """)
-        region_preferences = self.cursor.fetchall()
+            WHERE F_USERID = :user_id
+                AND F_PROVINCESPACE IS NOT NULL
+            GROUP BY F_PROVINCESPACE
+            ORDER BY region_count DESC
+        """, {'user_id': user_id})
         
-        return {
-            "satellite_preferences": satellite_preferences,
-            "region_preferences": region_preferences
-        }
-    
-    def get_data_quality_stats(self) -> Dict[str, Any]:
-        """分析数据质量统计"""
-        # 1. 云量分布
+        region_preferences = [dict(zip([
+            'province', 'order_count', 'avg_cloud', 'satellite_types'
+        ], row)) for row in self.cursor.fetchall()]
+        
+        # 4. 用户行为分析
         self.cursor.execute("""
             SELECT 
-                CASE 
-                    WHEN F_CLOUDAMOUNT <= 20 THEN '0-20%'
-                    WHEN F_CLOUDAMOUNT <= 40 THEN '21-40%'
-                    WHEN F_CLOUDAMOUNT <= 60 THEN '41-60%'
-                    WHEN F_CLOUDAMOUNT <= 80 THEN '61-80%'
-                    ELSE '81-100%'
-                END as cloud_range,
-                COUNT(*) as count
-            FROM TF_ORDER
-            WHERE F_CLOUDAMOUNT IS NOT NULL
-            GROUP BY CASE 
-                WHEN F_CLOUDAMOUNT <= 20 THEN '0-20%'
-                WHEN F_CLOUDAMOUNT <= 40 THEN '21-40%'
-                WHEN F_CLOUDAMOUNT <= 60 THEN '41-60%'
-                WHEN F_CLOUDAMOUNT <= 80 THEN '61-80%'
-                ELSE '81-100%'
-            END
-            ORDER BY cloud_range
-        """)
-        cloud_stats = self.cursor.fetchall()
+                F_BEHAVIORTYPE,
+                COUNT(*) as behavior_count,
+                SUM(F_DATANUM) as total_data_num,
+                SUM(F_DATASIZE) as total_data_size,
+                MIN(F_CREATETIME) as first_time,
+                MAX(F_CREATETIME) as last_time
+            FROM JGF_GXFW.TB_USER_BEHAVIOR
+            WHERE F_USERID = :user_id
+            GROUP BY F_BEHAVIORTYPE
+            ORDER BY behavior_count DESC
+        """, {'user_id': user_id})
         
-        # 2. 数据大小分布
+        behavior_stats = [dict(zip([
+            'behavior_type', 'count', 'data_num', 'data_size', 
+            'first_time', 'last_time'
+        ], row)) for row in self.cursor.fetchall()]
+        
+        # 5. 每日行为统计
         self.cursor.execute("""
             SELECT 
-                CASE 
-                    WHEN F_DATASIZEKB <= 1024 THEN '0-1MB'
-                    WHEN F_DATASIZEKB <= 10240 THEN '1-10MB'
-                    WHEN F_DATASIZEKB <= 102400 THEN '10-100MB'
-                    WHEN F_DATASIZEKB <= 1024000 THEN '100MB-1GB'
-                    ELSE '>1GB'
-                END as size_range,
-                COUNT(*) as count
-            FROM TF_ORDER
-            WHERE F_DATASIZEKB IS NOT NULL
-            GROUP BY CASE 
-                WHEN F_DATASIZEKB <= 1024 THEN '0-1MB'
-                WHEN F_DATASIZEKB <= 10240 THEN '1-10MB'
-                WHEN F_DATASIZEKB <= 102400 THEN '10-100MB'
-                WHEN F_DATASIZEKB <= 1024000 THEN '100MB-1GB'
-                ELSE '>1GB'
-            END
-            ORDER BY size_range
-        """)
-        size_stats = self.cursor.fetchall()
+                F_CREATETIME,
+                F_DATASIZE,
+                F_DATANUM,
+                F_SEARCHNUM
+            FROM JGF_GXFW.TB_USER_BEHAVIOR_BYDAY
+            WHERE F_USERID = :user_id
+            ORDER BY F_CREATETIME DESC
+        """, {'user_id': user_id})
+        
+        daily_stats = [dict(zip([
+            'date', 'data_size', 'data_num', 'search_num'
+        ], row)) for row in self.cursor.fetchall()]
         
         return {
-            "cloud_stats": cloud_stats,
-            "size_stats": size_stats
+            "basic_stats": basic_stats,
+            "favorite_satellites": favorite_satellites,
+            "region_preferences": region_preferences,
+            "behavior_stats": behavior_stats,
+            "daily_stats": daily_stats
         }
     
+    def print_user_detailed_report(self, user_id: str):
+        """打印用户详细报告"""
+        stats = self.get_user_detailed_stats(user_id)
+        
+        print(f"\n=== 用户 {user_id} 详细报告 ===\n")
+        
+        # 基本统计
+        basic = stats['basic_stats']
+        print("基本信息:")
+        print(f"总订单数: {basic['total_orders']}")
+        print(f"首次订单: {basic['first_order_time']}")
+        print(f"最近订单: {basic['last_order_time']}")
+        print(f"使用卫星数: {basic['used_satellites']}")
+        print(f"覆盖省份数: {basic['covered_provinces']}")
+        print(f"平均云量: {basic['avg_cloud_amount']:.2f}%")
+        print(f"平均数据大小: {basic['avg_data_size']/1024:.2f} MB")
+        print(f"使用数据类型数: {basic['data_types_used']}")
+        
+        # 最喜欢的卫星
+        print("\n最喜欢的卫星 (TOP 5):")
+        for sat in stats['favorite_satellites'][:5]:
+            print(f"卫星: {sat['satellite']}")
+            print(f"  使用次数: {sat['usage_count']}")
+            print(f"  平均云量: {sat['avg_cloud']:.2f}%")
+            print(f"  平均数据大小: {sat['avg_size']/1024:.2f} MB")
+        
+        # 地区偏好
+        print("\n地区偏好 (TOP 5):")
+        for region in stats['region_preferences'][:5]:
+            print(f"省份: {region['province']}")
+            print(f"  订单数: {region['order_count']}")
+            print(f"  使用卫星类型数: {region['satellite_types']}")
+            print(f"  平均云量: {region['avg_cloud']:.2f}%")
+        
+        # 行为统计
+        print("\n用户行为统计:")
+        behavior_types = {
+            0: "注册", 1: "登录", 2: "查询", 
+            3: "加入购物车", 4: "创建订单", 
+            5: "下载数据", 6: "用户访问"
+        }
+        for behavior in stats['behavior_stats']:
+            behavior_name = behavior_types.get(behavior['behavior_type'], str(behavior['behavior_type']))
+            print(f"{behavior_name}:")
+            print(f"  次数: {behavior['count']}")
+            if behavior['data_num']:
+                print(f"  数据量: {behavior['data_num']} 条")
+            if behavior['data_size']:
+                print(f"  数据大小: {behavior['data_size']/1024:.2f} MB")
+        
+        # 最近活动
+        print("\n最近活动统计 (最近5天):")
+        for daily in stats['daily_stats'][:5]:
+            print(f"日期: {daily['date']}")
+            print(f"  搜索次数: {daily['search_num']}")
+            print(f"  数据量: {daily['data_num']} 条")
+            print(f"  数据大小: {daily['data_size']/1024:.2f} MB")
+
     def print_analysis_report(self):
         """打印分析报告"""
-        # 获取所有统计信息
-        basic_stats = self.get_basic_stats()
-        user_prefs = self.get_user_preferences()
-        quality_stats = self.get_data_quality_stats()
+        # ... 保留原有代码 ...
         
-        # 打印基本统计
-        print("=== 基本统计信息 ===")
-        print(f"总订单数: {basic_stats['basic_stats']['total_orders']}")
-        print(f"总用户数: {basic_stats['basic_stats']['total_users']}")
-        print(f"卫星类型数: {basic_stats['basic_stats']['total_satellites']}")
-        print("\n")
-        
-        # 打印用户活跃度TOP 10
-        print("=== 最活跃用户TOP 10 ===")
-        for user_id, order_count, first_order, last_order in basic_stats['user_stats'][:10]:
-            print(f"用户ID: {user_id}, 订单数: {order_count}")
-            print(f"首次订单: {first_order}, 最近订单: {last_order}")
-        print("\n")
-        
-        # 打印卫星使用情况TOP 5
-        print("=== 最受欢迎卫星TOP 5 ===")
-        for satellite, usage_count, user_count in basic_stats['satellite_stats'][:5]:
-            print(f"卫星: {satellite}")
-            print(f"使用次数: {usage_count}, 使用用户数: {user_count}")
-        print("\n")
-        
-        # 打印云量分布
-        print("=== 云量分布 ===")
-        for cloud_range, count in quality_stats['cloud_stats']:
-            print(f"{cloud_range}: {count}订单")
-        print("\n")
-        
-        # 打印数据大小分布
-        print("=== 数据大小分布 ===")
-        for size_range, count in quality_stats['size_stats']:
-            print(f"{size_range}: {count}订单")
+        # 添加示例用户的详细分析
+        print("\n=== 示例用户详细分析 ===")
+        # 获取最活跃的用户
+        self.cursor.execute("""
+            SELECT F_USERID, COUNT(*) as order_count
+            FROM TF_ORDER
+            GROUP BY F_USERID
+            ORDER BY order_count DESC
+            FETCH FIRST 1 ROW ONLY
+        """)
+        top_user = self.cursor.fetchone()
+        if top_user:
+            self.print_user_detailed_report(top_user[0])
