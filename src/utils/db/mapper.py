@@ -392,6 +392,15 @@ class Mapper:
 
             field_mapping.update(lat_long_mapping)
 
+            # 处理 F_DATASIZE，将其乘以1024
+            if 'F_DATASIZE' in data and data['F_DATASIZE'] is not None:
+                try:
+                    data['F_DATASIZE'] = float(data['F_DATASIZE']) * 1024
+                except (ValueError, TypeError) as e:
+                    logger.error(f"处理 F_DATASIZE 失败: {str(e)}")
+                    # 如果转换失败，保持原值
+                    pass
+
             # 准备插入数据
             insert_data = {}
             for src_field, dest_field in field_mapping.items():
