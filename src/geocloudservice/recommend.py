@@ -192,7 +192,7 @@ def querySubscribedData(tablename: list, wkt: str, areacode: str, startTime: str
         logger.error(f'订阅数据失败: {e}')
         return None
 
-def sendEmailToUser(userid: str, data: list, pool):
+def sendEmailToUser(userid: str, startTime: str, endTime: str, pool):
     """向用户发送邮件
 
     Args:
@@ -206,7 +206,7 @@ def sendEmailToUser(userid: str, data: list, pool):
         emailAddr, _ = fetchDataFromDB(pool, sql, {'F_ID': userid})
         return emailAddr[0][0]
     subject = "地质云卫星数据服务-数据订阅"
-    message = f"您好，您订阅的数据{data}已经上线【中国地质调查局自然资源航空物探遥感中心】"
+    message = f"您好，您订阅的 {startTime} - {endTime} 期间的数据已经上线【中国地质调查局自然资源航空物探遥感中心】"
     emailAddr = getUserEmail(userid)
     send_email(subject, message, emailAddr)
     logger.info(f'邮件发送成功: {message} to {emailAddr}')
@@ -233,31 +233,90 @@ def ProcessDueSubscriptions(pool):
         selectSql = generateSqlQuery(dataname, tabelname, whereSql)
         data = executeQuery(pool, selectSql)
         
-        for sub in data:
-            IsWKT = sub[3]
-            if(IsWKT == 1):
-                wkt = sub[9]
-                areacode = None
-            else :
-                wkt = None
-                areacode = sub[2]
-            userid = sub[0]
-            subid = sub[1]
-            tablenames = sub[4].split(',')
-            startTime = str(sub[7])
-            endTime = str(sub[8])
-            cloudPercent = sub[5]
-            logger.info(f'startTime: {startTime}, endTime: {endTime}, cloudPercent: {cloudPercent}')
-            # datanames = querySubscribedData(tablenames, wkt, areacode, startTime, endTime, cloudPercent, userid, pool)
-            dataInfos = searchData(tablenames, wkt, areacode, startTime, endTime, cloudPercent, pool)
-            datanames = [data['F_DATANAME'] for data in dataInfos]
-            sendEmailToUser(userid, datanames, pool)
-            addDataToShop(dataInfos, userid, pool)
-            updateSubOrderStatus(pool, subid)
+        try:
+            for sub in data:
+                IsWKT = sub[3]
+                if(IsWKT == 1):
+                    wkt = sub[9]
+                    areacode = None
+                else :
+                    wkt = None
+                    areacode = sub[2]
+                userid = sub[0]
+                subid = str(sub[1])
+                tablenames = sub[4].split(',')
+                startTime = str(sub[7])
+                endTime = str(sub[8])
+                cloudPercent = sub[5]
+                logger.info(f'startTime: {startTime}, endTime: {endTime}, cloudPercent: {cloudPercent}')
+                # datanames = querySubscribedData(tablenames, wkt, areacode, startTime, endTime, cloudPercent, userid, pool)
+                dataInfos = searchData(tablenames, wkt, areacode, startTime, endTime, cloudPercent, pool)
+                # sendEmailToUser(userid, datanames, pool)
+                addDataToSubData(dataInfos, subid, pool)
+                updateSubOrderStatus(pool, subid)
+        except Exception as e:
+            logger.error(f'用户{userid} 订阅订单 {subid} 处理失败: {e}')
+            return None
         
     except Exception as e:
         logger.error(f'处理过期订阅失败: {e}')
         return None
+
+def addDataToSubData(dataInfos: list, subid: str, pool):
+    """将数据添加到订阅数据表"""
+    sql = "INSERT INTO SUBSCRIBE_ORDERDATA ( \
+            F_ID, F_ORDERID, F_DATANAME, F_SATELITE, F_SENSOR, \
+                F_RECEIVETIME, F_DATASIZE, F_DATASOURCE, F_STATUS,\
+                F_DATAPATH, F_DATATYPE, F_NODEID, F_DATAID, F_DOCNUM, \
+                F_TM, F_PRODUCTLEVEL, \
+                F_WKTRESPONSE, F_NODENAME, F_DOCNUM_OLD, F_CLOUDPERCENT, \
+                F_SGTABLENAME, F_DID, F_ORBITID, F_SCENEPATH, \
+                F_SCENEROW\
+            ) VALUES ( \
+                :F_ID, :F_ORDERID, :F_DATANAME, :F_SATELITE, :F_SENSOR, \
+                TO_DATE(:F_RECEIVETIME, 'YYYY-MM-DD HH24:MI:SS'), :F_DATASIZE, \
+                 :F_DATASOURCE, :F_STATUS,\
+                :F_DATAPATH, :F_DATATYPE, :F_NODEID, :F_DATAID, :F_DOCNUM, \
+                :F_TM, :F_PRODUCTLEVEL, \
+                :F_WKTRESPONSE, :F_NODENAME, :F_DOCNUM_OLD, :F_CLOUDPERCENT, \
+                :F_SGTABLENAME, :F_DID, :F_ORBITID, :F_SCENEPATH, \
+                :F_SCENEROW) "
+                
+    def addSingleDataToSubData(dataInfo, subid):
+        try:
+            params = {}
+            params['F_ID'] = getPkId()
+            params['F_ORDERID'] = subid
+            params['F_DATANAME'] = dataInfo['F_DATANAME']
+            params['F_SATELITE'] = dataInfo['F_SATELLITEID']
+            params['F_SENSOR'] = dataInfo['F_SENSORID']
+            params['F_RECEIVETIME'] = dataInfo['F_RECEIVETIME']
+            params['F_DATASIZE'] = float(dataInfo['F_DATASIZE'])
+            params['F_DATASOURCE'] = None
+            params['F_STATUS'] = None
+            params['F_DATAPATH'] = None
+            params['F_DATATYPE'] = 0
+            params['F_NODEID'] = dataInfo['NODEID']
+            params['F_DATAID'] = dataInfo['F_DATAID']
+            params['F_DOCNUM'] = None
+            params['F_TM'] = None
+            params['F_PRODUCTLEVEL'] = dataInfo['F_PRODUCTLEVEL']
+            params['F_WKTRESPONSE'] = dataInfo['WKTRESPONSE']
+            params['F_NODENAME'] = NodeIdToNodeName[dataInfo['NODEID']]
+            params['F_DOCNUM_OLD'] = None
+            params['F_CLOUDPERCENT'] = float(dataInfo['F_CLOUDPERCENT'])
+            params['F_SGTABLENAME'] = dataInfo['F_TABLENAME']
+            params['F_DID'] = int(dataInfo['F_DID'])
+            params['F_ORBITID'] = None if dataInfo['F_ORBITID'] == 'None' else int(dataInfo['F_ORBITID'])
+            params['F_SCENEPATH'] = dataInfo['F_SCENEPATH']
+            params['F_SCENEROW'] = dataInfo['F_SCENEROW']
+            executeNonQuery(pool, sql, params)
+        except Exception as e:
+            logger.error('添加数据到订购数据失败: {}, 错误数据: {}, subid: {}'.format(e, dataInfo, subid))
+            raise e
+    
+    executor = ThreadPoolExecutor()
+    executor.map(addSingleDataToSubData, dataInfos, [subid]*len(dataInfos))     
 
 def addDataToShop(dataInfos: list, userid, pool):
     """将数据添加到购物车"""
