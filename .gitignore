@@ -167,3 +167,4 @@ config.py
 
 **/*.log
 logs/
+src/recommender/analysis/user_features
