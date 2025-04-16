@@ -1,355 +1,539 @@
-import src.config.config as config
-import src.utils.logger as logger
-import threading 
+import threading
+import json
+import base64
+import oracledb
+from src.utils.logger import logger
 
 class Mapper:
     def __init__(self, pool):
         self.pool = pool
-        self.lock = threading.Lock()   
+        self.lock = threading.Lock()
         
-    # 执行查询语句
     def executeQuery(self, sql, params=None):
+        """执行查询语句"""
         try:
             with self.pool.acquire() as conn:
                 with conn.cursor() as cursor:
                     cursor.execute(sql, params)
+                    columns = [col[0] for col in cursor.description]
                     result = cursor.fetchall()
-                    # logger.info("查询成功: {}, params: {}".format(sql, params))
-                    return result
+                    return [dict(zip(columns, row)) for row in result]
         except Exception as e:
-            logger.error("SQL查询错误: {}, SQL: {}, params: {}".format(e, sql, params))
+            logger.error(f"SQL查询错误: {str(e)}, SQL: {sql}, params: {params}")
+            return []
     
-    # 执行非查询语句
     def executeNonQuery(self, sql, params=None):
+        """执行非查询语句"""
         try:
             with self.pool.acquire() as conn:
                 with conn.cursor() as cursor:
                     cursor.execute(sql, params)
                     conn.commit()
+                    return True
         except Exception as e:
-            logger.error("SQL执行错误: {}, SQL: {}, params: {}".format(e, sql, params))
-        
-    # 从TF_ORDER里面查询最近20条未处理的订单ID和订单名
-    def getIdByStatus(self):
+            logger.error(f"SQL执行: {str(e)}, SQL: {sql}, params: {params}")
+            return False
+            
+    def getDataByReceiveTime(self, start_time, end_time, table_name):
+        """根据接收时间或开始时间获取数据，并处理空间信息"""
         try:
-            count = config.JSON_PROCESS_COUNT
-            sql = "SELECT F_ID, F_ORDERNAME, F_GET_METHOD FROM (SELECT F_ID, F_ORDERNAME, F_GET_METHOD FROM TF_ORDER WHERE F_STATUS = 1 \
-                    AND F_ORDERNAME IS NOT NULL ORDER BY F_ORDERNAME DESC) WHERE ROWNUM <= : count"
-            result = self.executeQuery(sql, {'count': count})
-            return result
+            # 定义使用 F_STARTTIME 的表名列表
+            use_starttime_tables = [
+                "GF5_VIMSDATA","GF5_AHSIDATA","ZY1F_AHSI","ZY1F_ISR_NSR",
+            ]
+            
+            # 根据表名选择不同的时间字段
+            time_field = "F_STARTTIME" if table_name in use_starttime_tables else "F_RECEIVETIME"
+            
+            # 首先检查表是否有 F_SPATIAL_INFO 字段
+            check_column_query = """
+                SELECT COLUMN_NAME 
+                FROM ALL_TAB_COLUMNS 
+                WHERE TABLE_NAME = :table_name
+                AND OWNER = 'PDBADMIN'
+                AND COLUMN_NAME = 'F_SPATIAL_INFO'
+            """
+            
+            has_spatial_info = False
+            with self.pool.acquire() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(check_column_query, {'table_name': table_name})
+                    if cursor.fetchone():
+                        has_spatial_info = True
+            
+            # 根据是否有空间信息字段询
+            if has_spatial_info:
+                query = f"""
+                    SELECT 
+                        a.*,
+                        SDO_UTIL.TO_WKTGEOMETRY(a.F_SPATIAL_INFO) as GEOMETRY
+                    FROM PDBADMIN.{table_name} a
+                    WHERE {time_field} BETWEEN 
+                        TO_TIMESTAMP(:start_time, 'YYYY-MM-DD HH24:MI:SS.FF3') 
+                        AND TO_TIMESTAMP(:end_time, 'YYYY-MM-DD HH24:MI:SS.FF3')
+                """
+            else:
+                query = f"""
+                    SELECT 
+                        a.*
+                    FROM PDBADMIN.{table_name} a
+                    WHERE {time_field} BETWEEN 
+                        TO_TIMESTAMP(:start_time, 'YYYY-MM-DD HH24:MI:SS.FF3') 
+                        AND TO_TIMESTAMP(:end_time, 'YYYY-MM-DD HH24:MI:SS.FF3')
+                """
+            
+            results = []
+            with self.pool.acquire() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(query, {
+                        'start_time': start_time,
+                        'end_time': end_time
+                    })
+                    columns = [col[0] for col in cursor.description]
+                    rows = cursor.fetchall()
+                    
+                    for row in rows:
+                        data = dict(zip(columns, row))
+                        
+                        # 只有在有空间信息时才处理 GEOMETRY
+                        if has_spatial_info:
+                            if 'GEOMETRY' in data and data['GEOMETRY']:
+                                data['F_SPATIAL_INFO'] = data['GEOMETRY']
+                            else:
+                                data['F_SPATIAL_INFO'] = None
+                                
+                            if 'GEOMETRY' in data:
+                                del data['GEOMETRY']
+                           
+                        results.append(data)
+                        
+            return results
         except Exception as e:
-            logger.error("获取订单ID错误: %s" % e)
+            logger.error(f"获取数据错误: {str(e)}")
             return []
 
-    #根据订单ID从TF_ORDERDATA里面查询订阅数据名 
-    def getDatanameByOrderId(self,f_orderid):
+    def getGraphData(self, table_name):
+        """获取表中的所有数据，包括BLOB字段"""
         try:
-            sql = "SELECT F_DATANAME FROM TF_ORDERDATA WHERE F_ORDERID = :F_ORDERID AND F_STATUS = 1"
-            result = self.executeQuery(sql, {'F_ORDERID': f_orderid})
-            return result
+            # 首先获取表的列信息（从 JGF_GXFW 模式）
+            columns_query = f"""
+                SELECT COLUMN_NAME 
+                FROM ALL_TAB_COLUMNS 
+                WHERE TABLE_NAME = :table_name
+                AND OWNER = 'JGF_GXFW'
+            """
+            
+            results = []
+            with self.pool.acquire() as conn:
+                with conn.cursor() as cursor:
+                    # 获取表的信息
+                    cursor.execute(columns_query, {'table_name': table_name})
+                    columns = [row[0] for row in cursor.fetchall()]
+                    
+                    # 构建查询语句
+                    select_parts = []
+                    for col in columns:
+                        select_parts.append(f'a.{col}')
+                    
+                    if 'F_SPATIAL_INFO' in columns:
+                        select_parts.append('SDO_UTIL.TO_WKTGEOMETRY(a.F_SPATIAL_INFO) as GEOMETRY')
+                    
+                    # 获取总记录数
+                    count_query = f"SELECT COUNT(*) FROM {table_name}"
+                    cursor.execute(count_query)
+                    total_count = cursor.fetchone()[0]
+                    logger.info(f"表 {table_name} 总记录数: {total_count}")
+                    
+                    # 分批次查询数据
+                    page_size = 1000
+                    for offset in range(0, total_count, page_size):
+                        paged_query = f"""
+                            SELECT * FROM (
+                                SELECT a.*, ROWNUM as rnum 
+                                FROM (
+                                    SELECT {', '.join(select_parts)}
+                                    FROM JGF_GXFW.{table_name} a
+                                    ORDER BY a.F_DID
+                                ) a 
+                                WHERE ROWNUM <= :end_row
+                            ) 
+                            WHERE rnum > :start_row
+                        """
+                        
+                        cursor.execute(paged_query, {
+                            'start_row': offset,
+                            'end_row': offset + page_size
+                        })
+                        
+                        columns = [col[0] for col in cursor.description]
+                        rows = cursor.fetchall()
+                        
+                        for row in rows:
+                            data = {}
+                            for i, value in enumerate(row):
+                                column_name = columns[i]
+                                if column_name == 'RNUM':
+                                    continue
+                                    
+                                if value is not None and hasattr(value, 'read'):
+                                    try:
+                                        blob_data = value.read()
+                                        if blob_data:
+                                            data[column_name] = base64.b64encode(blob_data).decode('utf-8')
+                                        else:
+                                            data[column_name] = None
+                                    except Exception as e:
+                                        logger.error(f"处理BLOB数据错误: {str(e)}")
+                                        data[column_name] = None
+                                elif column_name == 'GEOMETRY' and value:
+                                    data['F_SPATIAL_INFO'] = value
+                                else:
+                                    data[column_name] = value
+                            
+                            results.append(data)
+                        
+                        logger.info(f"已处理 {len(results)}/{total_count} 条记录")
+                    
+                    logger.info(f"从表 {table_name} 获取到 {len(results)} 条数据")
+                    return results
+                    
         except Exception as e:
-            logger.error("获取订阅数据名错误: %s" % e)
+            logger.error(f"获取图形数据错误: {str(e)}")
             return []
 
-    # 根据订单名在TF_ORDER中更新订单状态
-    def updateOrderStatusByOrdername(self,f_ordername):
+    def getGraphDataByDataID(self, data_id):
+        """根据 F_DATAID 从图像数据表获取数据"""
         try:
-            with self.lock:
-                sql = "UPDATE TF_ORDER SET F_STATUS = 6 WHERE F_ORDERNAME = :F_ORDERNAME"
-                self.executeNonQuery(sql, {'F_ORDERNAME': f_ordername})
-        except Exception as e:
-            logger.error("更新订单状态错误: %s" % e)
-
-    # 根据订阅数据名和订单ID在TF_ORDERDATA中更新订阅数据状态
-    def updateDataStatusByNameAndId(self,f_dataname, f_orderid):
-        try:
-            with self.lock:
-                sql = "UPDATE TF_ORDERDATA SET F_STATUS = 0 WHERE F_DATANAME = :F_DATANAME AND F_ORDERID = :F_ORDERID"
-                self.executeNonQuery(sql, {'F_DATANAME': f_dataname, 'F_ORDERID': f_orderid})
-        except Exception as e:
-            logger.error("更新订单数据状态错误: %s" % e)
-        
-    # 根据订单名获取订单ID(f_orderid)
-    def getIdByOrdername(self,f_ordername):
-        try:
-            sql = "SELECT F_ID FROM TF_ORDER WHERE F_ORDERNAME = :F_ORDERNAME"
-            result = self.executeQuery(sql, {'F_ORDERNAME': f_ordername})
-            return result[0][0]
-        except Exception as e:
-            logger.error("获取订单ID错误: %s" % e)
-            return 0
-
-    # 根据订单ID获取未完成的订单数量
-    def getCountByOrderId(self,f_orderid):
-        try:
-            sql = "SELECT COUNT(*) FROM TF_ORDERDATA WHERE F_ORDERID = :F_ORDERID AND F_STATUS = 1"
-            result = self.executeQuery(sql, {'F_ORDERID': f_orderid})
-            return result[0][0]
-        except Exception as e:
-            logger.error("获取订单数量错误: %s" % e)
-            return 0
-
-    # 根据订单ID从TF_ORDER中获取所有信息
-    # 返回格式为列名：数据
-    def getAllByOrderIdFromOrder(self,f_orderid):
-        try:
-            with self.pool.acquire() as conn:
-                with conn.cursor() as cursor:
-                    sql = "SELECT * FROM TF_ORDER WHERE F_ID = :F_OEDERID"
-                    cursor.execute(sql, {'F_OEDERID': f_orderid})
-                    columns = [col[0] for col in cursor.description]
-                    result = cursor.fetchall()
+            query = f"""
+                SELECT 
+                    a.*
+                FROM JGF_GXFW.TB_BAS_META_BLOB a
+                WHERE a.F_DID = :data_id
+            """
             
-            data = [dict(zip(columns, row)) for row in result]
-            return data
-        except Exception as e:
-            logger.error("获取订单信息错误: %s" % e)
-            return data
-    
-    # 根据订单ID和数据名从TF_ORDERDATA中获取所有信息
-    # 返回格式为列名：数据
-    def getAllByOrderIdFromOrderData(self,f_orderid,f_dataname):
-        try:
             with self.pool.acquire() as conn:
                 with conn.cursor() as cursor:
-                    sql = "SELECT * FROM TF_ORDERDATA \
-                        WHERE F_ORDERID = :F_ORDERID AND F_DATANAME = :F_DATANAME"
-                    cursor.execute(sql, {'F_ORDERID': f_orderid, 'F_DATANAME': f_dataname})
+                    cursor.execute(query, {'data_id': data_id})
                     columns = [col[0] for col in cursor.description]
-                    result = cursor.fetchall()
-            
-            data = [dict(zip(columns, row)) for row in result]
-            return data
+                    rows = cursor.fetchall()
+                    
+                    if not rows:
+                        return None
+                    
+                    row = rows[0]  # 只处理第一条记录
+                    data = {}
+                    for i, value in enumerate(row):
+                        column_name = columns[i]
+                        
+                        # 处理BLOB数据
+                        if value is not None and hasattr(value, 'read'):
+                            try:
+                                blob_data = value.read()
+                                if blob_data:
+                                    data[column_name] = base64.b64encode(blob_data).decode('utf-8')
+                                else:
+                                    data[column_name] = None
+                            except Exception as e:
+                                logger.error(f"处理BLOB数据错误: {str(e)}")
+                                data[column_name] = None
+                        else:
+                            data[column_name] = value
+                    
+                    return data
+                
         except Exception as e:
-            logger.error("获取订单数据错误: %s" % e)
-            return data
+            logger.error(f"根据DataID={data_id}获取图形数据错误: {str(e)}")
+            return None
 
-    # 向数据库中插入数据以创建Serv-U用户
-    # 1.向FTP_SUUSERS表中插入数据以创建用户
-    # 2.向FTP_USERDIRACCESS表中插入数据以配置用户权限
-    def insertServUInfo(self, starttime ,endtime, ordername, pwd):
-        RtDailyCount = "0,14,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0"
+    def insertGraphData(self, data):
+        """将JSON数据（包含base64编码的BLOB）插入到TB_BAS_META_BLOB表"""
         try:
-            sql1 = """
-                MERGE INTO FTP_SUUSERS t
-                USING (SELECT :ordername AS LoginID FROM dual) d
-                ON (t."LoginID" = d.LoginID)
-                WHEN NOT MATCHED THEN
-                INSERT (
-                    "StatisticsStartTime", "RtServerStartTime", "RtDailyCount", "LoginID", 
-                    "PasswordChangedOn", "PasswordEncryptMode", "PasswordUTF8", "Password", 
-                    "Type", "ExpiresOn", "HomeDir", "IncludeRespCodesInMsgFiles", 
-                    "ODBCVersion", "Quota"
-                ) 
-                VALUES (
-                    :starttime, :starttime, :RtDailyCount, :ordername, 
-                    :endtime, '1', '1', :pwd, 
-                    '2', :endtime, 'Z:\\shareJGF\\order\\data\\' || :ordername, 
-                    '1', '4', '0'
-                )
-                """
-            # print("Executing SQL 1:", sql1)
-            self.executeNonQuery(sql1, {
-                'starttime': starttime,
-                'RtDailyCount': RtDailyCount,
-                'ordername': ordername,
-                'endtime': endtime,
-                'pwd': pwd
-            })
-            sql2 = """
-                MERGE INTO FTP_USERDIRACCESS t
-                USING (SELECT :ordername AS LoginID FROM dual) d
-                ON (t."LoginID" = d.LoginID)
-                WHEN NOT MATCHED THEN
-                INSERT (
-                    "LoginID", "SortIndex", "Dir", "Access"
-                ) 
-                VALUES (
-                    :ordername, 1, 'Z:\\shareJGF\\order\\data\\' || :ordername, '4383'
-                )
-                """
-            self.executeNonQuery(sql2, {
-                'ordername': ordername
-            })
-        except Exception as e:
-            logger.error("Serv-U用户创建错误: %s" % e)
-        
-    # 向TF_ORDER表中对应用户插入密码
-    def insertServUPwd(self, ordername, pwd, md5):
-        try:
-            sql1 = "UPDATE TF_ORDER SET F_PASSWORD = :PWD WHERE F_ORDERNAME = :ORDERNAME"
-            self.executeNonQuery(sql1, {'PWD': pwd, 'ORDERNAME': ordername})
-            # 保证TF_ORDER表中的密码和FTP_SUUSERS表中的密码一致
-            sql2 = "UPDATE FTP_SUUSERS SET \"Password\" = :MD5 WHERE \"LoginID\" = :ORDERNAME"
-            self.executeNonQuery(sql2, {'MD5': md5, 'ORDERNAME': ordername})
-        except Exception as e:
-            logger.error("Serv-U密码插入错误: %s" % e)
-     
-    # 从TF_ORDER表中查询测试订单
-    def getTestOrder(self, one_week_ago):
-        try:
-            logger.info("正在查询测试订单")
+            # 检查记录是否已存在
+            check_sql = """
+                SELECT COUNT(1) FROM TB_BAS_META_BLOB 
+                WHERE F_DID = :did
+            """
+            
             with self.pool.acquire() as conn:
                 with conn.cursor() as cursor:
-                    sql = """
-                    SELECT * 
-                    FROM TF_ORDER 
-                    WHERE (F_PRODUCT_NAME LIKE '%测试%' 
-                        OR F_PRODUCT_NAME LIKE '%test%' 
-                        OR F_PRODUCT_NAME LIKE '%Test%')
-                        AND (
-                            (F_UPDATETIME IS NOT NULL AND F_UPDATETIME < TO_TIMESTAMP(:one_week_ago, 'YYYY-MM-DD HH24:MI:SS.FF3'))
-                            OR (F_UPDATETIME IS NULL AND F_CREATTIME < TO_TIMESTAMP(:one_week_ago, 'YYYY-MM-DD HH24:MI:SS.FF3'))
+                    cursor.execute(check_sql, {'did': data.get('F_DID')})
+                    if cursor.fetchone()[0] > 0:
+                        logger.info(f"BLOB记录已存在，跳过: F_DID = {data.get('F_DID')}")
+                        return True
+            
+            # 如果记录不存在，继续插入流程
+            # 准备SQL语句，动态生成列名和占位符
+            columns = []
+            values = []
+            bind_params = {}
+            
+            # BLOB字段列表
+            blob_fields = ['F_THUMIMAGE', 'F_QUICKIMAGE', 'F_SHAPEIMAGE', 'F_GRAPH']
+            
+            with self.pool.acquire() as conn:
+                cursor = conn.cursor()
+                
+                for key, value in data.items():
+                    if value is not None:  # 只处理非空值
+                        columns.append(key)
+                        values.append(f":{key}")
+                        
+                        # 如果是BLOB字段且有数据
+                        if key in blob_fields and value:
+                            try:
+                                # 直接使用 bytes 对象，oracledb 会自动处理
+                                blob_data = base64.b64decode(value)
+                                bind_params[key] = blob_data
+                            except Exception as e:
+                                logger.error(f"BLOB据解码错误 ({key}): {str(e)}")
+                                bind_params[key] = None
+                        else:
+                            bind_params[key] = value
+
+                # 构建INSERT语句
+                sql = f"""
+                    INSERT INTO TB_BAS_META_BLOB (
+                        {', '.join(columns)}
+                    ) VALUES (
+                        {', '.join(values)}
+                    )
+                """
+                
+                try:
+                    cursor.execute(sql, bind_params)
+                    conn.commit()
+                    logger.info(f"成功插入BLOB数据: F_DID = {data.get('F_DID', 'unknown')}")
+                    return True
+                except Exception as e:
+                    logger.error(f"插入数据错误: {str(e)}")
+                    logger.error(f"SQL: {sql}")
+                    logger.error(f"列: {columns}")
+                    return False
+                finally:
+                    cursor.close()
+                    
+        except Exception as e:
+            logger.error(f"处理数据插入错误: {str(e)}")
+            return False
+
+    def insert_satellite_data(self, table_name, data):
+        """将卫星数据插入到指定表"""
+        try:
+            # 首先检查记录是否已存在
+            check_sql = f"""
+                SELECT COUNT(1) FROM JGF_GXFW.{table_name} 
+                WHERE F_DATANAME = :dataname
+            """
+            
+            with self.pool.acquire() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(check_sql, {'dataname': data.get('F_DATANAME')})
+                    if cursor.fetchone()[0] > 0:
+                        logger.info(f"记录已存在，跳过: {data.get('F_DATANAME')}")
+                        return True  # 返回 True 因为这不算作错误
+            
+            # 如果记录不存在，继续插入流程
+            # 定义使用 F_STARTTIME 的表名列表
+            use_starttime_tables = [
+                "GF5_VIMSDATA", "GF5_AHSIDATA", "ZY1F_AHSI", "ZY1F_ISR_NSR",
+            ]
+
+            # 经纬度字段映射关系（支持两种命名方式）
+            lat_long_mapping = {
+                # 第一种命名方式
+                'F_UPPERLEFTLAT': 'F_TOPLEFTLATITUDE',
+                'F_UPPERLEFTLONG': 'F_TOPLEFTLONGITUDE',
+                'F_UPPERRIGHTLAT': 'F_TOPRIGHTLATITUDE',
+                'F_UPPERRIGHTLONG': 'F_TOPRIGHTLONGITUDE',
+                'F_BOTTOMRIGHTLAT': 'F_BOTTOMRIGHTLATITUDE',
+                'F_BOTTOMRIGHTLONG': 'F_BOTTOMRIGHTLONGITUDE',
+                'F_BOTTOMLEFTLAT': 'F_BOTTOMLEFTLATITUDE',
+                'F_BOTTOMLEFTLONG': 'F_BOTTOMLEFTLONGITUDE',
+                
+                # 第二种命名方式
+                'F_DATAUPPERLEFTLAT': 'F_TOPLEFTLATITUDE',
+                'F_DATAUPPERLEFTLONG': 'F_TOPLEFTLONGITUDE',
+                'F_DATAUPPERRIGHTLAT': 'F_TOPRIGHTLATITUDE',
+                'F_DATAUPPERRIGHTLONG': 'F_TOPRIGHTLONGITUDE',
+                'F_DATALOWERRIGHTLAT': 'F_BOTTOMRIGHTLATITUDE',
+                'F_DATALOWERRIGHTLONG': 'F_BOTTOMRIGHTLONGITUDE',
+                'F_DATALOWERLEFTLAT': 'F_BOTTOMLEFTLATITUDE',
+                'F_DATALOWERLEFTLONG': 'F_BOTTOMLEFTLONGITUDE',
+            }
+
+            # 更新字段映射，加入经纬度映射
+            field_mapping = {
+                # 直接映射的字段
+                'F_DATANAME': 'F_DATANAME',
+                'F_PRODUCTID': 'F_PRODUCTID',
+                'F_PRODUCTLEVEL': 'F_PRODUCTLEVEL',
+                'F_SATELLITEID': 'F_SATELLITEID',
+                'F_SENSORID': 'F_SENSORID',
+                'F_CLOUDPERCENT': 'F_CLOUDPERCENT',
+                'F_CLOUDCOVER': 'F_CLOUDPERCENT',
+                'F_ORBITID': 'F_ORBITID',
+                'F_SCENEID': 'F_SCENEID',
+                'F_SCENEPATH': 'F_SCENEPATH',
+                'F_SCENEROW': 'F_SCENEROW',
+                'F_IMPORTUSER': 'F_IMPORTUSER',
+                'F_DATASIZE': 'F_DATASIZE',
+                'F_PITCHSATELLITEANGLE': 'F_PITCHSATELLITEANGLE',
+                'F_PITCHVIEWINGANGLE': 'F_PITCHVIEWINGANGLE',
+                'F_YAWSATELLITEANGLE': 'F_YAWSATELLITEANGLE',
+                'F_ROLLSATELLITEANGLE': 'F_ROLLSATELLITEANGLE',
+                'F_ROLLVIEWINGANGLE': 'F_ROLLVIEWINGANGLE',
+                
+                # 其他特殊映射
+                'F_IMAGEGSD': 'F_LOCATION',
+                'F_IMPORTTIME': 'F_IMPORTDATE',
+                'F_GEOTABLENAME': 'F_TABLENAME',
+                'F_PRODUCTFORMAT': 'F_DATATYPENAME',
+            }
+
+            field_mapping.update(lat_long_mapping)
+
+            # 处理 F_DATASIZE，将其乘以1024
+            if 'F_DATASIZE' in data and data['F_DATASIZE'] is not None:
+                try:
+                    data['F_DATASIZE'] = float(data['F_DATASIZE']) * 1024
+                except (ValueError, TypeError) as e:
+                    logger.error(f"处理 F_DATASIZE 失败: {str(e)}")
+                    # 如果转换失败，保持原值
+                    pass
+
+            # 准备插入数据
+            insert_data = {}
+            for src_field, dest_field in field_mapping.items():
+                if src_field in data:
+                    # 特殊处理 F_SENSORID 字段
+                    if src_field == 'F_SENSORID' and data[src_field]:
+                        sensor_id = ''.join(c for c in data[src_field] if not c.isdigit())
+                        insert_data[dest_field] = sensor_id
+                    # 处理云量字段，避免重复
+                    elif dest_field == 'F_CLOUDPERCENT' and 'F_CLOUDPERCENT' in insert_data:
+                        continue
+                    else:
+                        insert_data[dest_field] = data[src_field]
+
+            # 特殊处理：将 F_DATAID 映射为 F_DID
+            if 'F_DATAID' in data and data['F_DATAID'] is not None:
+                insert_data['F_DID'] = data['F_DATAID']
+            elif 'F_DID' in data and data['F_DID'] is not None:
+                insert_data['F_DID'] = data['F_DID']
+            else:
+                # 如果没有 ID，生成一个新的
+                with self.pool.acquire() as conn:
+                    with conn.cursor() as cursor:
+                        cursor.execute("SELECT MAX(F_DID) + 1 FROM JGF_GXFW.TB_META_GF1")
+                        new_id = cursor.fetchone()[0]
+                        insert_data['F_DID'] = new_id if new_id else 1
+
+            # 处理时间字段 - 从ISO格式转换为Oracle日期格式
+            time_fields = {
+                'F_PRODUCETIME': data.get('F_PRODUCETIME', ''),
+                'F_IMPORTDATE': data.get('F_IMPORTTIME', '')
+            }
+
+            # 处理 F_RECEIVETIME：优先使用 F_RECEIVETIME，如果没有则尝试使用 F_STARTTIME
+            if 'F_RECEIVETIME' in data and data['F_RECEIVETIME']:
+                time_fields['F_RECEIVETIME'] = data['F_RECEIVETIME']
+                logger.debug(f"使用 F_RECEIVETIME: {data['F_RECEIVETIME']}")
+            elif 'F_STARTTIME' in data and data['F_STARTTIME']:
+                time_fields['F_RECEIVETIME'] = data['F_STARTTIME']
+                logger.debug(f"使用 F_STARTTIME 作为 F_RECEIVETIME: {data['F_STARTTIME']}")
+            else:
+                time_fields['F_RECEIVETIME'] = ''
+                logger.debug("F_RECEIVETIME 和 F_STARTTIME 都不存在")
+
+            # 处理每个时间字段
+            for field, value in time_fields.items():
+                if value:
+                    # 处理时间格式
+                    if 'T' in value:
+                        # 处理带T的ISO格式
+                        timestamp = value.replace('T', ' ')
+                        if '.000Z' in timestamp:
+                            timestamp = timestamp.replace('.000Z', '')
+                        elif 'Z' in timestamp:
+                            timestamp = timestamp.replace('Z', '')
+                    else:
+                        timestamp = value
+                    insert_data[field] = timestamp
+                    logger.debug(f"处理时间字段 {field}: {timestamp}")
+
+            # 生成空间信息
+            required_fields = [
+                'F_TOPLEFTLATITUDE', 'F_TOPLEFTLONGITUDE',
+                'F_TOPRIGHTLATITUDE', 'F_TOPRIGHTLONGITUDE',
+                'F_BOTTOMRIGHTLATITUDE', 'F_BOTTOMRIGHTLONGITUDE',
+                'F_BOTTOMLEFTLATITUDE', 'F_BOTTOMLEFTLONGITUDE'
+            ]
+
+            if all(field in insert_data for field in required_fields):
+                # 构建多边形的坐标数组
+                coordinates = [
+                    insert_data['F_TOPLEFTLONGITUDE'], insert_data['F_TOPLEFTLATITUDE'],
+                    insert_data['F_TOPRIGHTLONGITUDE'], insert_data['F_TOPRIGHTLATITUDE'],
+                    insert_data['F_BOTTOMRIGHTLONGITUDE'], insert_data['F_BOTTOMRIGHTLATITUDE'],
+                    insert_data['F_BOTTOMLEFTLONGITUDE'], insert_data['F_BOTTOMLEFTLATITUDE'],
+                    insert_data['F_TOPLEFTLONGITUDE'], insert_data['F_TOPLEFTLATITUDE']  # 闭合多边形
+                ]
+                
+                if all(coord is not None for coord in coordinates):
+                    # 构建 SDO_GEOMETRY
+                    spatial_sql = f"""
+                        SDO_GEOMETRY(
+                            2003,  -- 2D polygon
+                            4326,  -- SRID: WGS84
+                            NULL,
+                            SDO_ELEM_INFO_ARRAY(1,1003,1),  -- exterior polygon
+                            SDO_ORDINATE_ARRAY({','.join(map(str, coordinates))})
                         )
                     """
-                    cursor.execute(sql, {'one_week_ago': one_week_ago})
-                    columns = [col[0] for col in cursor.description]
-                    result = [dict(zip(columns, row)) for row in cursor.fetchall()]
-  
-            logger.info("测试订单查询完成")
-            return result
-        except Exception as e:
-            logger.error("查询测试订单错误: %s" % e)
-            return []
-        
-    # 向TF_ORDER_TEST表中插入测试订单
-    def insertTestOrder(self,order):
-        try:
-            # logger.info("正在插入测试订单")
-            columns = ', '.join([f'"{col}"' for col in order.keys()])
-            values = ', '.join([f':{col}' for col in order.keys()])
-            sql = f"""
-            MERGE INTO TF_ORDER_TEST t
-            USING (SELECT 1 FROM dual) d
-            ON (t.F_ID = :F_ID)
-            WHEN NOT MATCHED THEN
-            INSERT ({columns})
-            VALUES ({values})
-            """
-            
-            self.executeNonQuery(sql, order)
-            # logger.info("测试订单插入完成")
-        except Exception as e:
-            logger.error("插入测试订单错误: %s" % e)
-        
-    # 查询TF_ORDER_TEST表中是否含有对应订单
-    def getTestOrderCountByID(self, F_ID):
-        try:
-            # logger.info("正在查询测试订单%s" % F_ID) 
-            sql = f"SELECT COUNT(*) FROM TF_ORDER_TEST WHERE F_ID = :F_ID"
-            result = self.executeQuery(sql, {'F_ID': F_ID})[0][0]
-            # logger.info("测试订单%s查询完成" % F_ID)
-            return result
-        except Exception as e:
-            logger.error("查询测试订单错误: %s" % e)
-            return 0
-        
-    # 从TF_ORDER中删除测试订单
-    def deleteTestOrder(self, F_ID):
-        try:
-            # logger.info("正在从TF_ORDER中删除测试订单%s" % F_ID)
-            sql = f"DELETE FROM TF_ORDER WHERE F_ID = :F_ID"
-            self.executeNonQuery(sql, {'F_ID': F_ID})
-            # logger.info("测试订单%s成功从TF_ORDER中删除" % F_ID)
-        except Exception as e:
-            logger.error("删除测试订单错误: %s" % e)
-              
+                    insert_data['F_SPATIAL_INFO'] = spatial_sql
 
-    # 将文件信息插入TF_ORDERDATA表中
-    def insertOrderData(self,data):
-        try:
-            orderId = data.get("F_ID")
-            # logger.info("正在插入订单数据{}".format(orderId))
-            sql = """
-            MERGE INTO TF_ORDERDATA t
-            USING (SELECT :F_ID AS F_ID FROM dual) d
-            ON (t.F_ID = d.F_ID)
-            WHEN NOT MATCHED THEN
-            INSERT (
-                F_ID, F_ORDERID, F_DATANAME, F_SATELITE, F_SENSOR, F_RECEIVETIME, F_DATASIZE, 
-                F_DATASOURCE, F_STATUS, F_DATAPATH, F_TASKID, F_DATATYPE, F_NODEID, F_DOCNUM, 
-                F_DATAID, F_TM, F_FEEDBACK_CUSTOM_STATUS, F_FEEDBACK_OTHER_REQUEST, 
-                F_FEEDBACK_TREAT_TIME, F_WKTRESPONSE, F_PRODUCTLEVEL, F_DOCNUM_OLD, F_NODENAME, 
-                F_SGTABLENAME, F_DID, F_PUSH_STATUS, F_PUSH_START, F_PUSH_FINISH, 
-                F_TRANSFER_STATUS, F_ORDER_TASK_ID, F_TRANSFER_COUNT, F_RECEIVE_STATUS, 
-                F_PRODUCTID, F_SCENEID, F_CLOUDPERCENT, F_ORDER, F_ORBITID, F_SCENEPATH, 
-                F_SCENEROW, F_ISASK, F_LOG, F_SYNC, F_SENDMQ
-            )
-            VALUES (
-                :F_ID, :F_ORDERID, :F_DATANAME, :F_SATELITE, :F_SENSOR, TO_DATE(:F_RECEIVETIME, 'YYYY-MM-DD"T"HH24:MI:SS'), :F_DATASIZE, 
-                :F_DATASOURCE, :F_STATUS, :F_DATAPATH, :F_TASKID, :F_DATATYPE, :F_NODEID, :F_DOCNUM, 
-                :F_DATAID, :F_TM, :F_FEEDBACK_CUSTOM_STATUS, :F_FEEDBACK_OTHER_REQUEST, 
-                :F_FEEDBACK_TREAT_TIME, :F_WKTRESPONSE, :F_PRODUCTLEVEL, :F_DOCNUM_OLD, :F_NODENAME, 
-                :F_SGTABLENAME, :F_DID, :F_PUSH_STATUS, :F_PUSH_START, :F_PUSH_FINISH, 
-                :F_TRANSFER_STATUS, :F_ORDER_TASK_ID, :F_TRANSFER_COUNT, :F_RECEIVE_STATUS, 
-                :F_PRODUCTID, :F_SCENEID, :F_CLOUDPERCENT, :F_ORDER, :F_ORBITID, :F_SCENEPATH, 
-                :F_SCENEROW, :F_ISASK, :F_LOG, :F_SYNC, :F_SENDMQ
-            )
+            # 构建 SQL 语句
+            columns = list(insert_data.keys())
+            values = []
+            bind_params = {}
+
+            for col in columns:
+                if col in ['F_PRODUCETIME', 'F_RECEIVETIME', 'F_IMPORTDATE']:
+                    if col in insert_data and insert_data[col]:
+                        values.append(f"TO_DATE(:{col}, 'YYYY-MM-DD HH24:MI:SS')")  # 使用 TO_DATE 而不是 TO_TIMESTAMP
+                        bind_params[col] = insert_data[col]
+                    else:
+                        values.append("NULL")
+                elif col == 'F_SPATIAL_INFO' and 'F_SPATIAL_INFO' in insert_data:
+                    values.append(insert_data['F_SPATIAL_INFO'])
+                else:
+                    values.append(f":{col}")
+                    bind_params[col] = insert_data[col]
+
+            sql = f"""
+                INSERT INTO JGF_GXFW.{table_name} (
+                    {', '.join(columns)}
+                ) VALUES (
+                    {', '.join(values)}
+                )
             """
-            self.executeNonQuery(sql, data)
-            logger.info("订单数据{}插入成功".format(orderId))
+
+            with self.pool.acquire() as conn:
+                cursor = conn.cursor()
+                try:
+                    cursor.execute(sql, bind_params)
+                    conn.commit()
+                    logger.info(f"成功插入数据到 {table_name}: F_DATANAME = {data.get('F_DATANAME', 'unknown')}")
+                    return True
+                except Exception as e:
+                    logger.error(f"插入数据错误: {str(e)}")
+                    logger.error(f"SQL: {sql}")
+                    logger.error(f"数据: {bind_params}")
+                    return False
+                finally:
+                    cursor.close()
+
         except Exception as e:
-            logger.error("订单数据{}插入错误:{}".format(orderId, e))
-            
-    # 将文件信息插入TF_ORDER表中
-    def insertOrder(self,data):
-        try:
-            sql = """
-            MERGE INTO TF_ORDER t
-            USING (SELECT :F_ORDERNAME AS F_ORDERNAME FROM dual) d
-            ON (t.F_ORDERNAME = d.F_ORDERNAME)
-            WHEN NOT MATCHED THEN
-            INSERT (F_ID, F_ORDERNAME, F_ORDERCODE, F_CREATTIME, F_UPDATETIME, F_USERID, F_DISTFREQUENCY, 
-                    F_STARTTIME, F_ENDTIME, F_STATUS, F_DISTMETHOD, F_TYPE, F_DESCRIPTION, F_PATHRULE, 
-                    F_QUERY, F_DELAYTIME, F_SITENAME, F_ISCREATED, F_LEVEL, F_APPLYUSER, F_APPLYUSERPHONE, 
-                    F_APPLYUSERUSED, F_APPLYUSERUNIT, F_DATATYPE, F_LEFTUPLONGITUDE, F_LEFTUPIMENSION, 
-                    F_RIGHTDOWNLONGITUDE, F_RIGHTDOWNIMENSION, F_SPACETYPE, F_COUNTRYSPACE, F_PROVINCESPACE, 
-                    F_CITYSPACE, F_TOWNSSPACE, F_SHPPATH, F_SATELLITE, F_SENSOR, F_CLOUDAMOUNT, F_SATLEVEL, 
-                    F_USER_CARDID, F_GET_METHOD, F_PRODUCT_NAME, F_DATA_SUM, F_EXPECTED_APPLICATION_EFFECT, 
-                    F_LOGIN_USER, DOWNLOD_PATH_FILE, F_CAUSE, F_PUSH_ID, F_DATA_TYPE_ID, F_GEOMETRY_ID, 
-                    F_EXECUTE_TIME, F_TASK_STATUS, F_ORDER, F_PROCESS_DESCRIBE, F_ASSIGNMENT, F_DATACOUNT, 
-                    F_SYSTEMTYPE, F_JDDM, F_TYFILEDOWN, F_PASSWORD, F_TYORDERID, F_TYOTHERINFO, F_ORDERLOG, 
-                    F_TALLYGAG, F_NDWAY, F_ORDER_STATUS, F_RESPONSESPEED, F_SERVICEATTITUDE, F_FEEDBACKUPLOAD, 
-                    F_MODIFYTYPE, F_SUBASSIGNMENT, F_EXTRACTINGELEMENTS, F_FEEDBACK, F_APPRAISE, F_SYNC, 
-                    F_AUDITOR, F_DATASIZEKB, F_REPORTED)
-            VALUES (:F_ID, :F_ORDERNAME, :F_ORDERCODE, TO_TIMESTAMP(:F_CREATTIME, 'YYYY-MM-DD"T"HH24:MI:SS.FF6'), 
-                    TO_TIMESTAMP(:F_UPDATETIME,'YYYY-MM-DD"T"HH24:MI:SS.FF6'),
-                    :F_USERID, :F_DISTFREQUENCY, 
-                    :F_STARTTIME, :F_ENDTIME, :F_STATUS, :F_DISTMETHOD, :F_TYPE, :F_DESCRIPTION, :F_PATHRULE, 
-                    :F_QUERY, :F_DELAYTIME, :F_SITENAME, :F_ISCREATED, :F_LEVEL, :F_APPLYUSER, :F_APPLYUSERPHONE, 
-                    :F_APPLYUSERUSED, :F_APPLYUSERUNIT, :F_DATATYPE, :F_LEFTUPLONGITUDE, :F_LEFTUPIMENSION, 
-                    :F_RIGHTDOWNLONGITUDE, :F_RIGHTDOWNIMENSION, :F_SPACETYPE, :F_COUNTRYSPACE, :F_PROVINCESPACE, 
-                    :F_CITYSPACE, :F_TOWNSSPACE, :F_SHPPATH, :F_SATELLITE, :F_SENSOR, :F_CLOUDAMOUNT, :F_SATLEVEL, 
-                    :F_USER_CARDID, :F_GET_METHOD, :F_PRODUCT_NAME, :F_DATA_SUM, :F_EXPECTED_APPLICATION_EFFECT, 
-                    :F_LOGIN_USER, :DOWNLOD_PATH_FILE, :F_CAUSE, :F_PUSH_ID, :F_DATA_TYPE_ID, :F_GEOMETRY_ID, 
-                    :F_EXECUTE_TIME, :F_TASK_STATUS, :F_ORDER, :F_PROCESS_DESCRIBE, :F_ASSIGNMENT, :F_DATACOUNT, 
-                    :F_SYSTEMTYPE, :F_JDDM, :F_TYFILEDOWN, :F_PASSWORD, :F_TYORDERID, :F_TYOTHERINFO, :F_ORDERLOG, 
-                    :F_TALLYGAG, :F_NDWAY, :F_ORDER_STATUS, :F_RESPONSESPEED, :F_SERVICEATTITUDE, :F_FEEDBACKUPLOAD, 
-                    :F_MODIFYTYPE, :F_SUBASSIGNMENT, :F_EXTRACTINGELEMENTS, :F_FEEDBACK, :F_APPRAISE, :F_SYNC, 
-                    :F_AUDITOR, :F_DATASIZEKB, :F_REPORTED)
-        """
-            self.executeNonQuery(sql, data)
-            ordername = data.get("F_ORDERNAME")
-            logger.info("订单{}插入成功".format(ordername))
-        except Exception as e:
-            logger.error("订单{}插入错误: {}".format(ordername, e))
-     
-    # 根据用户Id获取用户邮箱 
-    def getEmailByUserId(self,UserId):
-        try:
-            sql = "SELECT F_EMAIL FROM TC_SYS_USER WHERE F_ID = :F_ID"
-            result = self.executeQuery(sql, {'F_ID': UserId})
-            return result[0][0]
-        except Exception as e:
-            logger.error("获取用户邮箱错误: %s" % e)
-            return ""
-        
-    # 根据订单名获取用户id
-    def getUserIdByOrdername(self,ordername):
-        try:
-            sql = "SELECT F_USERID FROM TF_ORDER WHERE F_ORDERNAME = :F_ORDERNAME"
-            result = self.executeQuery(sql, {'F_ORDERNAME': ordername})
-            return result[0][0]
-        except Exception as e:
-            logger.error("获取用户ID错误: %s" % e)
-            return 0
+            logger.error(f"处理数据插入错误: {str(e)}")
+            return False
+

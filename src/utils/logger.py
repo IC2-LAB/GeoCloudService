@@ -1,28 +1,29 @@
 import logging
-import datetime
-logger = logging.getLogger("main")
-stream_handler = logging.StreamHandler()
+import os
+from datetime import datetime
 
-time_f_str = "%Y-%m-%d_%H-%M-%S"
-file_handler = logging.FileHandler(f"{datetime.datetime.now().strftime(time_f_str)}.log", encoding="utf-8")
+# 创建 logs 目录（如果不存在）
+if not os.path.exists('logs'):
+    os.makedirs('logs')
 
-stream_handler.setLevel(logging.INFO)
-file_handler.setLevel(logging.DEBUG)
+# 获取当前日期作为文件名的一部分
+current_date = datetime.now().strftime('%Y%m%d')
 
-log_fmt = logging.Formatter("%(asctime)s - %(levelname)s: %(message)s")
-stream_handler.setFormatter(log_fmt)
-file_handler.setFormatter(log_fmt)
+# 创建日志格式化器
+formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
 
-logger.addHandler(stream_handler)
+# 创建文件处理器
+file_handler = logging.FileHandler(f'logs/import_{current_date}.log', encoding='utf-8')
+file_handler.setFormatter(formatter)
+
+# 创建控制台处理器
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(formatter)
+
+# 获取 logger 实例
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+# 添加处理器
 logger.addHandler(file_handler)
-
-logger.setLevel(logging.DEBUG)
-
-def info(message):
-    logger.info(message)
-
-def debug(message):
-    logger.debug(message)
-
-def error(message):
-    logger.error(message)
+logger.addHandler(console_handler)
