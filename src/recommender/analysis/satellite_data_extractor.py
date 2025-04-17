@@ -56,6 +56,39 @@ class SatelliteDataExtractor:
             # CB04A系列
             "CB04A_VNIC": "TB_META_CB04A",
         }
+    
+    def _execute_with_batched_ids(self, query_template, id_list, batch_size=900):
+        """用批处理方式执行IN查询，避免ORA-01795错误
+        
+        Args:
+            query_template: 查询模板，包含{}占位符
+            id_list: ID列表
+            batch_size: 每批的大小，默认900
+            
+        Returns:
+            pd.DataFrame: 合并的查询结果
+        """
+        results = []
+        
+        # 将ID列表分批
+        for i in range(0, len(id_list), batch_size):
+            batch = id_list[i:i + batch_size]
+            query = query_template.format(','.join([f"'{id}'" for id in batch]))
+            
+            self.cursor.execute(query)
+            # 获取列名
+            if not results:  # 只在第一批获取列名
+                columns = [desc[0].lower() for desc in self.cursor.description]
+            
+            # 获取数据
+            batch_data = self.cursor.fetchall()
+            if batch_data:
+                results.extend(batch_data)
+        
+        if not results:
+            return pd.DataFrame()
+            
+        return pd.DataFrame(results, columns=columns)
         
     def get_order_data(self, loginname: str) -> pd.DataFrame:
         """获取指定用户的订单数据
@@ -85,7 +118,14 @@ class SatelliteDataExtractor:
         # 获取列名
         columns = [desc[0].lower() for desc in self.cursor.description]
         # 获取数据
-        order_data = pd.DataFrame(self.cursor.fetchall(), columns=columns)
+        data = self.cursor.fetchall()
+        if not data:
+            return pd.DataFrame()
+            
+        order_data = pd.DataFrame(data, columns=columns)
+        
+        # 确保ID列是字符串类型
+        order_data['f_id'] = order_data['f_id'].astype(str)
         
         return order_data
     
@@ -98,8 +138,11 @@ class SatelliteDataExtractor:
         Returns:
             pd.DataFrame: 包含订单数据详细信息的DataFrame
         """
-        # 查询TF_ORDERDATA表获取数据详细信息
-        self.cursor.execute("""
+        if not order_ids:
+            return pd.DataFrame()
+            
+        # 使用批处理执行查询
+        query_template = """
             SELECT 
                 F_ORDERID,
                 F_DATAID,
@@ -113,13 +156,14 @@ class SatelliteDataExtractor:
                 F_SCENEID
             FROM TF_ORDERDATA
             WHERE F_ORDERID IN ({})
-        """.format(','.join([f"'{id}'" for id in order_ids])))
+        """
         
-        # 获取列名
-        columns = [desc[0].lower() for desc in self.cursor.description]
-        # 获取数据
-        order_details = pd.DataFrame(self.cursor.fetchall(), columns=columns)
+        order_details = self._execute_with_batched_ids(query_template, order_ids)
         
+        # 确保ID列是字符串类型
+        if not order_details.empty:
+            order_details['f_orderid'] = order_details['f_orderid'].astype(str)
+            
         return order_details
     
     def get_satellite_metadata(self, data_ids: List[str], satellite_type: str) -> pd.DataFrame:
@@ -132,14 +176,17 @@ class SatelliteDataExtractor:
         Returns:
             pd.DataFrame: 包含卫星元数据的DataFrame
         """
+        if not data_ids:
+            return pd.DataFrame()
+            
         # 根据卫星类型获取对应的元数据表
         metadata_table = self.satellite_table_map.get(satellite_type)
         if not metadata_table:
             print(f"警告: 未找到卫星类型 {satellite_type} 对应的元数据表")
             return pd.DataFrame()
             
-        # 查询对应的元数据表
-        self.cursor.execute(f"""
+        # 构建查询模板，使用批处理执行
+        query_template = f"""
             SELECT 
                 F_DATANAME,
                 F_PRODUCETIME,
@@ -163,13 +210,10 @@ class SatelliteDataExtractor:
                 F_ROLLSATELLITEANGLE,
                 F_ROLLVIEWINGANGLE
             FROM {metadata_table}
-            WHERE F_DATAID IN ({','.join([f"'{id}'" for id in data_ids])})
-        """)
+            WHERE F_DATAID IN ({{}})
+        """
         
-        # 获取列名
-        columns = [desc[0].lower() for desc in self.cursor.description]
-        # 获取数据
-        metadata = pd.DataFrame(self.cursor.fetchall(), columns=columns)
+        metadata = self._execute_with_batched_ids(query_template, data_ids)
         
         return metadata
     
@@ -191,6 +235,9 @@ class SatelliteDataExtractor:
         
         # 2. 获取订单详细信息
         order_details = self.get_order_data_details(order_data['f_id'].tolist())
+        if order_details.empty:
+            print(f"未找到用户 {loginname} 的订单详细信息")
+            return
         
         # 3. 按卫星类型分组获取元数据
         all_metadata = []
@@ -206,59 +253,85 @@ class SatelliteDataExtractor:
             return
             
         # 合并所有元数据
-        metadata = pd.concat(all_metadata, ignore_index=True)
+        try:
+            metadata = pd.concat(all_metadata, ignore_index=True)
+        except Exception as e:
+            print(f"合并元数据失败: {str(e)}")
+            return
         
         # 4. 合并数据
-        # 合并订单数据和订单详细信息
-        merged_data = pd.merge(
-            order_data,
-            order_details,
-            left_on='f_id',
-            right_on='f_orderid',
-            how='left'
-        )
-        
-        # 合并元数据
-        final_data = pd.merge(
-            merged_data,
-            metadata,
-            left_on='f_dataid',
-            right_on='f_dataid',
-            how='left'
-        )
+        try:
+            # 确保合并时的类型一致
+            order_data['f_id'] = order_data['f_id'].astype(str)
+            order_details['f_orderid'] = order_details['f_orderid'].astype(str)
+            
+            # 合并订单数据和订单详细信息
+            merged_data = pd.merge(
+                order_data,
+                order_details,
+                left_on='f_id',
+                right_on='f_orderid',
+                how='left'
+            )
+            
+            # 合并元数据
+            if 'f_dataid' in metadata.columns:
+                final_data = pd.merge(
+                    merged_data,
+                    metadata,
+                    on='f_dataid',  # 使用on而不是left_on/right_on确保类型一致
+                    how='left'
+                )
+            else:
+                final_data = merged_data
+        except Exception as e:
+            print(f"合并数据失败: {str(e)}")
+            return
         
         # 5. 保存数据
-        # 保存为CSV
-        csv_path = f'{output_dir}/{loginname}_satellite_data.csv'
-        final_data.to_csv(csv_path, index=False, encoding='utf-8')
-        print(f"卫星数据已保存为CSV格式: {csv_path}")
-        
-        # 保存数据统计信息
-        stats = {
-            'total_orders': len(order_data),
-            'total_data_items': len(order_details),
-            'total_metadata_items': len(metadata),
-            'unique_satellites': final_data['f_satelite'].nunique(),
-            'unique_sensors': final_data['f_sensor'].nunique(),
-            'data_size_stats': {
-                'min': final_data['f_datasize'].min(),
-                'max': final_data['f_datasize'].max(),
-                'mean': final_data['f_datasize'].mean(),
-                'total': final_data['f_datasize'].sum()
-            },
-            'cloud_percent_stats': {
-                'min': final_data['f_cloudpercent'].min(),
-                'max': final_data['f_cloudpercent'].max(),
-                'mean': final_data['f_cloudpercent'].mean()
+        try:
+            # 保存为CSV
+            csv_path = f'{output_dir}/{loginname}_satellite_data.csv'
+            final_data.to_csv(csv_path, index=False, encoding='utf-8-sig')  # 使用带BOM的UTF-8编码
+            print(f"卫星数据已保存为CSV格式: {csv_path}")
+            
+            # 保存数据统计信息
+            stats = {
+                'total_orders': len(order_data),
+                'total_data_items': len(order_details),
+                'total_metadata_items': len(metadata) if not metadata.empty else 0,
+                'unique_satellites': final_data['f_satelite'].nunique() if 'f_satelite' in final_data.columns else 0,
+                'unique_sensors': final_data['f_sensor'].nunique() if 'f_sensor' in final_data.columns else 0
             }
-        }
-        
-        stats_path = f'{output_dir}/{loginname}_data_statistics.json'
-        with open(stats_path, 'w', encoding='utf-8') as f:
-            json.dump(stats, f, indent=2, ensure_ascii=False)
-        print(f"数据统计信息已保存: {stats_path}")
-        
-        return final_data
+            
+            # 添加数据大小统计（如果列存在）
+            if 'f_datasize' in final_data.columns and not final_data['f_datasize'].empty:
+                stats['data_size_stats'] = {
+                    'min': float(final_data['f_datasize'].min()),
+                    'max': float(final_data['f_datasize'].max()),
+                    'mean': float(final_data['f_datasize'].mean()),
+                    'total': float(final_data['f_datasize'].sum())
+                }
+            
+            # 添加云量统计（如果列存在）
+            if 'f_cloudpercent' in final_data.columns and not final_data['f_cloudpercent'].empty:
+                cloud_data = final_data['f_cloudpercent'].dropna()
+                if not cloud_data.empty:
+                    stats['cloud_percent_stats'] = {
+                        'min': float(cloud_data.min()),
+                        'max': float(cloud_data.max()),
+                        'mean': float(cloud_data.mean())
+                    }
+            
+            stats_path = f'{output_dir}/{loginname}_data_statistics.json'
+            with open(stats_path, 'w', encoding='utf-8') as f:
+                json.dump(stats, f, indent=2, ensure_ascii=False)
+            print(f"数据统计信息已保存: {stats_path}")
+            
+            return final_data
+        except Exception as e:
+            print(f"保存数据时出错: {str(e)}")
+            return None
     
     def batch_process_users(self, loginnames: List[str], output_dir: str = 'satellite_data'):
         """批量处理多个用户的卫星数据
@@ -267,9 +340,22 @@ class SatelliteDataExtractor:
             loginnames: 用户登录名列表
             output_dir: 输出目录
         """
+        # 创建输出目录
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+            print(f"创建输出目录: {output_dir}")
+            
+        processed_count = 0
+        error_count = 0
+        
         for loginname in loginnames:
             print(f"\n处理用户 {loginname} 的卫星数据...")
             try:
-                self.process_and_save_data(loginname, output_dir)
+                result = self.process_and_save_data(loginname, output_dir)
+                if result is not None:
+                    processed_count += 1
             except Exception as e:
-                print(f"处理用户 {loginname} 的数据时出错: {str(e)}") 
+                error_count += 1
+                print(f"处理用户 {loginname} 的数据时出错: {str(e)}")
+                
+        print(f"\n批处理完成: 成功处理 {processed_count} 个用户，失败 {error_count} 个用户") 
