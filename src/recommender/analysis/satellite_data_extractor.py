@@ -19,42 +19,72 @@ class SatelliteDataExtractor:
         
         # 定义卫星类型与元数据表的映射关系
         self.satellite_table_map = {
+            # # GF1系列
+            # "GF1_WFV_YSDATA": "TB_META_GF1",
+            # "GF1_YSDATA": "TB_META_GF1",
+            # "GF1B_YSDATA": "TB_META_GF1B",
+            # "GF1C_YSDATA": "TB_META_GF1C",
+            # "GF1D_YSDATA": "TB_META_GF1D",
+            # # GF2系列
+            # "GF2_YSDATA": "TB_META_GF2",
+            # # GF5系列
+            # "GF5_AHSIDATA": "TB_META_GF5",
+            # "GF5_VIMSDATA": "TB_META_GF5",
+            # # GF6系列
+            # "GF6_WFV_DATA": "TB_META_GF6",
+            # "GF6_YSDATA": "TB_META_GF6",
+            # # GF7系列
+            # "GF7_BWD_DATA": "TB_META_GF7",
+            # "GF7_MUX_DATA": "TB_META_GF7",
+            # # ZY301系列
+            # "ZY301A_MUX_DATA": "TB_META_ZY301",
+            # "ZY301A_NAD_DATA": "TB_META_ZY301",
+            # # ZY302系列
+            # "ZY302A_MUX_DATA": "TB_META_ZY302",
+            # "ZY302A_NAD_DATA": "TB_META_ZY302",
+            # # ZY303系列
+            # "ZY303A_MUX_DATA": "TB_META_ZY303",
+            # "ZY303A_NAD_DATA": "TB_META_ZY303",
+            # # ZY02C系列
+            # "ZY02C_HRC_DATA": "TB_META_ZY02C",
+            # "ZY02C_PMS_DATA": "TB_META_ZY02C",
+            # # ZY1E系列
+            # "ZY1E_AHSI": "TB_META_ZY1E",
+            # # ZY1F系列
+            # "ZY1F_AHSI": "TB_META_ZY1F",
+            # "ZY1F_ISR_NSR": "TB_META_ZY1F",
+            # # CB04A系列
+            # "CB04A_VNIC": "TB_META_CB04A",
+
+
             # GF1系列
-            "GF1_WFV_YSDATA": "TB_META_GF1",
-            "GF1_YSDATA": "TB_META_GF1",
-            "GF1B_YSDATA": "TB_META_GF1B",
-            "GF1C_YSDATA": "TB_META_GF1C",
-            "GF1D_YSDATA": "TB_META_GF1D",
+            "GF1": "TB_META_GF1",
+            "GF1B": "TB_META_GF1B",
+            "GF1C": "TB_META_GF1C",
+            "GF1D": "TB_META_GF1D",
+            "GF1BCD": "TB_META_GF1BCD",
             # GF2系列
-            "GF2_YSDATA": "TB_META_GF2",
+            "GF2": "TB_META_GF2",
             # GF5系列
-            "GF5_AHSIDATA": "TB_META_GF5",
-            "GF5_VIMSDATA": "TB_META_GF5",
+            "GF5": "TB_META_GF5",
             # GF6系列
-            "GF6_WFV_DATA": "TB_META_GF6",
-            "GF6_YSDATA": "TB_META_GF6",
+            "GF6": "TB_META_GF6",
             # GF7系列
-            "GF7_BWD_DATA": "TB_META_GF7",
-            "GF7_MUX_DATA": "TB_META_GF7",
+            "GF7": "TB_META_GF7",
             # ZY301系列
-            "ZY301A_MUX_DATA": "TB_META_ZY301",
-            "ZY301A_NAD_DATA": "TB_META_ZY301",
+            "ZY301": "TB_META_ZY301",
             # ZY302系列
-            "ZY302A_MUX_DATA": "TB_META_ZY302",
-            "ZY302A_NAD_DATA": "TB_META_ZY302",
+            "ZY302": "TB_META_ZY302",
             # ZY303系列
-            "ZY303A_MUX_DATA": "TB_META_ZY303",
-            "ZY303A_NAD_DATA": "TB_META_ZY303",
+            "ZY303": "TB_META_ZY303",
             # ZY02C系列
-            "ZY02C_HRC_DATA": "TB_META_ZY02C",
-            "ZY02C_PMS_DATA": "TB_META_ZY02C",
+            "ZY02C": "TB_META_ZY02C",
             # ZY1E系列
-            "ZY1E_AHSI": "TB_META_ZY1E",
+            "ZY1E": "TB_META_ZY1E",
             # ZY1F系列
-            "ZY1F_AHSI": "TB_META_ZY1F",
-            "ZY1F_ISR_NSR": "TB_META_ZY1F",
+            "ZY1F": "TB_META_ZY1F",
             # CB04A系列
-            "CB04A_VNIC": "TB_META_CB04A",
+            "CB04A": "TB_META_CB04A",
         }
         
     def get_order_data(self, loginname: str) -> pd.DataFrame:
