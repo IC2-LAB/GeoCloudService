@@ -117,6 +117,16 @@ def cacheFeachRecomCoverData(tablename: list, wkt: str, areacode: str , cache: C
     combine_wkt, total_area = geoprocessor.calculateMergedArea(geoData)
     return sizenum, combine_wkt, total_area, 1
 
+def cacheFeachSearchData(tablename: list, wkt: str, areacode: str, startTime: str, endTime: str, cloudPercent: str, cache: CacheManager, guid: str, pool) ->list:
+    cacheKey = cache.getCacheKey('searchData', guid)
+    cacheData = cache.getData(cacheKey)
+    if cacheData is not None:
+        return cacheData
+    else:
+        geoData = searchData(tablename, wkt, areacode, startTime, endTime, cloudPercent, pool)
+        cache.setData(cacheKey, geoData)
+        return geoData
+    
 def searchData(tablename: list, wkt :str, areacode : str, startTime: str, endTime: str, cloudPercent: str, pool) ->list:
     """检索功能具体实现
 
@@ -441,7 +451,7 @@ def generateSqlQuery(dataname: list, tablename: list, wheresql: str = None) -> s
         for table in tablename:
             table = table.upper()
             columns = ','.join([f'{name}' for name in dataname])
-            tableSqlList.append(f'select {columns} FROM {table} {wheresql}')
+            tableSqlList.append(f'select /*+ PARALLEL(16) */ {columns} FROM {table} {wheresql}')
         sql = ' UNION ALL '.join(tableSqlList)
         return sql
     except Exception as e:

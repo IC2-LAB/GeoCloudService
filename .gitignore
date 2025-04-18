@@ -164,3 +164,7 @@ cython_debug/
 
 # Production config file
 config.py
+
+# local test file
+test.py
+locustfile.py

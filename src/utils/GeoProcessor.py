@@ -18,12 +18,20 @@ class GeoProcessor:
         返回值: 与目标区域相交的数据GeoDataFrame;
         """
         try:
-            # 检查每个几何形状是否与target_area相交
-            intersects = data_gdf['geometry'].intersects(target_area, align=True)
-            
-            # 使用布尔索引来筛选出相交的数据
-            intersecting_data_gdf = data_gdf[intersects].copy()
-            return intersecting_data_gdf
+            if not isinstance(target_area, (gpd.GeoSeries, gpd.GeoDataFrame)):
+                target_gdf = gpd.GeoDataFrame(geometry=[target_area], crs=data_gdf.crs)
+            else:
+                target_gdf = target_area
+            # 使用空间连接(sjoin)进行高效的空间索引查询
+            # 'predicate'参数替代了旧版的'op'参数
+            intersecting_gdf = gpd.sjoin(
+                data_gdf,
+                target_gdf,
+                how='inner',
+                predicate='intersects'
+            )
+            # 去除sjoin自动添加的右表索引列，返回原数据的子集
+            return intersecting_gdf.drop(columns=['index_right']).copy()
         except Exception as e:
             logger.error(f"检查相交数据时出现错误: {e}")
             return gpd.GeoDataFrame()
