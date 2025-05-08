@@ -1,7 +1,10 @@
 import geopandas as gpd
 import shapely
+import numpy as np
+import pandas as pd
 from src.config import config
 from src.utils.logger import logger
+
         
 class GeoDBHandler:
     def __init__(self):
@@ -49,17 +52,20 @@ class GeoDBHandler:
         Returns:
             gpd.GeoDataFrame;
         """
-        geometries = []
-        attributes = []
-        for row in rows:
-            # 分离几何和属性
-            geometry = self.sdoGeometryPolygonToShapely(row[-1])
-            attribute = row[:-1]
-            geometries.append(geometry)
-            attributes.append(attribute)
-        
+
+        imageData = pd.DataFrame(rows, columns=columns+['geometry'])
+        geoList = imageData['geometry']
+        def SdoToList(item):
+            if item is not None and item.SDO_GTYPE == 2003:
+                return item.SDO_ORDINATES.aslist()
+            else:
+                return [0] * 10
+        geoList = list(map(SdoToList, geoList))
+        ordinates = np.array(geoList, dtype=np.float64)
+        ordinates = ordinates.reshape(-1, 5, 2)
+        imageData['geometry'] = shapely.polygons(ordinates)
         # 创建GeoDataFrame
-        gdf = gpd.GeoDataFrame(attributes, columns=columns, geometry=geometries, crs=self.crs)
+        gdf = gpd.GeoDataFrame(imageData, geometry=imageData['geometry'], crs=self.crs)
         return gdf
 
     def sdoGeometryToGeoDataFrame(self, sdo_geometry, additional_columns=None, additional_data=None) -> gpd.GeoDataFrame:

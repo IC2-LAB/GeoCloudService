@@ -8,6 +8,9 @@ from src.utils.IdMaker import getPkId
 from src.utils.db.oracle import executeNonQuery, executeQuery
 from src.config.config import satelliteToNodeId, NodeIdToNodeName
 from src.utils.CacheManager import CacheManager
+from math import isnan
+
+import time
 
 def fetchDataFromDB(pool, sql:str ,param=None):
     """从数据库中获取数据和字段名"""
@@ -90,12 +93,12 @@ def fetchRecommendData(tablename: list, wkt: str, areacode: str , pool):
     (minlon, maxlon, minlat, maxlat) = geoprocessor.getCoordinateRange(target_area)
     coverage_ratio = 0
     n = 1
+    data, columns = fetchDataFromDB(pool, sql, {'limit_num': 8000, 'minlon': minlon, 'maxlon': maxlon, 'minlat': minlat, 'maxlat': maxlat})
+    data_gdf = geodbhandler.imageDataToGeoDataFrame(data, columns)
     try:
         while coverage_ratio < 0.9 and n < 9:
-            limit_num = 100 * n
-            data, columns = fetchDataFromDB(pool, sql, {'limit_num': limit_num, 'minlon': minlon, 'maxlon': maxlon, 'minlat': minlat, 'maxlat': maxlat})
-            data_gdf = geodbhandler.imageDataToGeoDataFrame(data, columns)
-            intersected_data = geoprocessor.findIntersectedData(target_area, data_gdf)
+            limit_num = 1000 * n
+            intersected_data = geoprocessor.findIntersectedData(target_area, data_gdf[:limit_num])
             coverage_ratio = geoprocessor.calCoverageRatio(target_area, intersected_data)
             n += 1
         return intersected_data, coverage_ratio
@@ -416,8 +419,10 @@ def formatDictForView(dictList: list):
         list: 处理后的字典列表
     """
     try:
+        startTime = time.time()
         res = []
-        for index, data in enumerate(dictList):
+        # for index, data in enumerate(dictList):
+        def processData(data, index):
             newDict = data.copy()
             
             if 'geometry' in newDict.keys():
@@ -429,12 +434,17 @@ def formatDictForView(dictList: list):
 
             newDict['RN'] = index + 1
             newDict['NODENAME'] = NodeIdToNodeName[newDict['NODEID']]
-            newDict['F_CLOUDPERCENT'] = int(float(newDict['F_CLOUDPERCENT']))
-            res.append(newDict)
+            fcloudpercent = float(newDict['F_CLOUDPERCENT'])
+            newDict['F_CLOUDPERCENT'] = int(fcloudpercent) if not isnan(fcloudpercent) else 0
+        res = list(map(processData, dictList, range(len(dictList))))
+        endTime = time.time()
+        print(f'格式化字典列表耗时: {endTime - startTime}秒')
         return res
     except Exception as e:
         logger.error(f'格式化字典列表失败: {e}')
         return None
+
+
 
 def generateSqlQuery(dataname: list, tablename: list, wheresql: str = None) -> str:
     """根据传入的表名和字段名生成查询语句

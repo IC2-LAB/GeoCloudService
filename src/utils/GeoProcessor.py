@@ -139,22 +139,26 @@ class GeoProcessor:
             logger.error(f"获取坐标范围时出现错误: {e}")
             return None
 
-    def GeoDataFrameToDict(self, data: gpd.GeoDataFrame) -> dict:
+
+
+    def GeoDataFrameToDict(self, data: gpd.GeoDataFrame) -> list:
         """
-        将GeoDataFrame转换为字典;
+        将GeoDataFrame转换为字典列表;
         data: GeoDataFrame;
-        返回值格式：[{'dataname': 'A', 'geometry': 'POLYGON ((...))'}, {'dataname': 'B', 'geometry': 'POLYGON ((...))'}, ...]
+        返回值格式：[{'dataname': 'A', 'geometry': 'POLYGON ((...))'}, ...]
         """
-        result_list = []
-        for _, row in data.iterrows():
-            row_dict = {}
-            for key, value in row.items():
-                if key == 'geometry':
-                    row_dict[key] = value.wkt
-                else:
-                    row_dict[key] = str(value)
-            result_list.append(row_dict)
-        return result_list
+        # 创建副本避免修改原数据
+        df = data.copy()
+        
+        # 批量转换几何列为WKT字符串，处理空值
+        df['geometry'] = df.geometry.apply(lambda g: g.wkt if g is not None else None)
+        
+        # 批量将非几何列转换为字符串类型
+        non_geom_cols = df.columns[df.columns != 'geometry']
+        df[non_geom_cols] = df[non_geom_cols].astype(str)
+        
+        # 直接转换为记录字典列表
+        return df.to_dict(orient='records')
 
     def GeoDataFrameToList(self, data: gpd.GeoDataFrame) -> list:
         """

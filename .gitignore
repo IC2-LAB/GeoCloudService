@@ -166,5 +166,6 @@ cython_debug/
 config.py
 
 # local test file
-test.py
+test*.py
 locustfile.py
+uv.*
