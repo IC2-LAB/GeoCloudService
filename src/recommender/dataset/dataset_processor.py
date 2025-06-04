@@ -21,24 +21,28 @@ class DatasetProcessor:
         
     def process_all_users(self) -> None:
         """处理所有用户的数据集"""
-        # 确保输出目录存在
         os.makedirs(self.output_dir, exist_ok=True)
         
-        # 获取所有用户
         cursor = self.conn.cursor()
         try:
+            # 获取有效订单的用户
             cursor.execute("""
-                SELECT DISTINCT F_LOGIN_USER 
-                FROM TF_ORDER 
-                WHERE F_LOGIN_USER IS NOT NULL
+                SELECT DISTINCT u.F_LOGIN_USER
+                FROM TF_ORDER o
+                JOIN TF_ORDERDATA od ON o.F_ID = od.F_ORDERID
+                WHERE o.F_LOGIN_USER IS NOT NULL
+                AND od.F_STATUS = 'SUCCESS'  -- 只选择成功的订单
             """)
             users = [row[0] for row in cursor.fetchall()]
+            print(f"找到 {len(users)} 个有效用户")
+            
+            # 处理每个用户的数据集
+            for i, user_id in enumerate(users, 1):
+                print(f"处理用户 {i}/{len(users)}: {user_id}")
+                self._process_user(user_id)
+                
         finally:
             cursor.close()
-            
-        # 处理每个用户的数据集
-        for user_id in users:
-            self._process_user(user_id)
             
     def _process_user(self, user_id: str) -> None:
         """处理单个用户的数据集"""
