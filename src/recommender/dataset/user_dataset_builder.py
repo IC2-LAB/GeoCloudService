@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Dict, List, Tuple, Any
 from shapely import wkt
 import random
+from .config import DATASET_CONFIG 
 
 class UserDatasetBuilder:
     def __init__(self, conn, neg_pos_ratio: int = 5):
@@ -211,55 +212,57 @@ class UserDatasetBuilder:
         processed_data = []
         
         for sample in samples:
-            # 1. 处理时间特征
-            receive_time = sample['receive_time']
-            time_features = {
-                'year': receive_time.year,
-                'month': receive_time.month,
-                'day': receive_time.day,
-                'day_of_week': receive_time.weekday(),
-                'days_from_now': (datetime.now() - receive_time).days
-            }
-            
-            # 2. 处理WKT地理特征
             try:
-                geometry = wkt.loads(sample['wkt_geometry'])
-                geo_features = {
-                    'area': geometry.area,
-                    'centroid_lat': geometry.centroid.y,
-                    'centroid_lon': geometry.centroid.x,
+                # 1. 处理时间特征
+                receive_time = sample['receive_time']
+                time_features = {
+                    'year': receive_time.year,
+                    'month': receive_time.month,
+                    'day': receive_time.day,
+                    'day_of_week': receive_time.weekday(),
+                    'days_from_now': (datetime.now() - receive_time).days
                 }
-            except:
-                geo_features = {
-                    'area': 0,
-                    'centroid_lat': 0,
-                    'centroid_lon': 0,
+                
+                # 2. 处理空间特征
+                bbox = sample['bbox']
+                spatial_features = {
+                    'top_left_lat': bbox['top_left'][0],
+                    'top_left_lon': bbox['top_left'][1],
+                    'bottom_right_lat': bbox['bottom_right'][0],
+                    'bottom_right_lon': bbox['bottom_right'][1]
                 }
-            
-            # 3. 其他特征
-            other_features = {
-                'data_id': sample['data_id'],
-                'satellite_id': sample['satellite_id'],
-                'sensor_id': sample['sensor_id'],
-                'cloud_cover': float(sample['cloud_cover']),
-                'resolution': float(sample['resolution']),
-            }
-            
-            # 合并所有特征
-            processed_data.append({
-                **time_features,
-                **geo_features,
-                **other_features
-            })
+                
+                # 3. 其他特征
+                other_features = {
+                    'data_id': sample['data_id'],
+                    'satellite_id': sample['satellite_id'],
+                    'sensor_id': sample['sensor_id'],
+                    'cloud_cover': float(sample['cloud_cover']),
+                    'data_size': float(sample.get('data_size', 0)),
+                    'product_level': sample.get('product_level', '')
+                }
+                
+                # 合并所有特征
+                processed_data.append({
+                    **time_features,
+                    **spatial_features,
+                    **other_features
+                })
+            except Exception as e:
+                print(f"Warning: Error processing sample: {str(e)}")
+                print(f"Sample data: {sample}")
+                continue
         
-        # 转换为DataFrame
+        # 创建DataFrame并确保所有列都存在
         df = pd.DataFrame(processed_data)
         
-        # 特征标准化/归一化
-        numeric_columns = ['cloud_cover', 'resolution', 'area']
-        df[numeric_columns] = (df[numeric_columns] - df[numeric_columns].mean()) / df[numeric_columns].std()
-        
-        return df
+        # 确保所有配置的特征列都存在
+        for col in DATASET_CONFIG['feature_columns']:
+            if col not in df.columns:
+                df[col] = 0  # 或者其他适当的默认值
+                
+        # 只返回配置中指定的列
+        return df[DATASET_CONFIG['feature_columns']]
     
     def _batch_query(self, cursor, base_query: str, id_list: list, batch_size: int = 900) -> list:
         """批量处理大量ID的查询
