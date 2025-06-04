@@ -1,25 +1,24 @@
 import oracledb
 import os
-import sys
-from pathlib import Path
-
-# 添加项目根目录到Python路径
-project_root = Path(__file__).parent.parent.parent.absolute()
-sys.path.append(str(project_root))
-
-# 导入模块
-from analysis.satellite_data_extractor import SatelliteDataExtractor
-from analysis.order_statistics import OrderAnalyzer
+from .analysis.satellite_data_extractor import SatelliteDataExtractor
+from .analysis.order_statistics import OrderAnalyzer
+from src.config import config
+from src.utils.db.oracle import create_pool
 
 def main():
     # 1. 建立数据库连接
     try:
-        # 使用配置信息连接数据库
-        conn = oracledb.connect(
-            user="jgf_gxfw",
-            password="icw3kx45",
-            dsn="10.82.8.4:1521/satdb"
-        )
+        pool = create_pool()
+        conn = pool.acquire()
+        # conn = oracledb.connect(
+        # #     user="your_username",
+        # #     password="your_password",
+        # #     dsn="your_dsn"
+        #     user=config.DB_USER,
+        #     password=config.DB_PWD,
+            
+
+        # )
         print("数据库连接成功")
     except Exception as e:
         print(f"数据库连接失败: {str(e)}")
