@@ -783,7 +783,7 @@ def import_daily():
             
             logger.info(f"检查时间范围: {start_time} 到 {end_time}")
             
-            # 定义需要处理的所有文件夹
+            # 定义需要处理的所有文件夹 
             folders = [
                 "GF1_WFV_YSDATA", "GF1_YSDATA", "GF1B_YSDATA", "GF1C_YSDATA", "GF1D_YSDATA",
                 "GF2_YSDATA", "GF5_AHSIDATA", "GF5_VIMSDATA", "GF6_WFV_DATA", "GF6_YSDATA",
@@ -952,9 +952,9 @@ def import_daily():
             logger.error(f"每日导入任务错误: {str(e)}")
     
     # 修改为凌晨4点执行
-    schedule.every().day.at("04:00").do(daily_task)
+    schedule.every().day.at("10:50").do(daily_task)
     
-    logger.info("每日导入服务已启动，将在每天 04:00 执行")
+    logger.info("每日导入服务已启动，将在每天 14:00 执行")
     logger.info("将处理所有文件夹的前24小时新数据")
     
     while True:
