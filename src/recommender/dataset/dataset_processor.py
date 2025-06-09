@@ -31,16 +31,20 @@ class DatasetProcessor:
                 FROM TF_ORDER o
                 JOIN TF_ORDERDATA od ON o.F_ID = od.F_ORDERID
                 WHERE o.F_LOGIN_USER IS NOT NULL
-                AND od.F_STATUS = 'SUCCESS'  -- 只选择成功的订单
+                AND od.F_STATUS = 'SUCCESS'
             """)
             users = [row[0] for row in cursor.fetchall()]
             print(f"找到 {len(users)} 个有效用户")
             
             # 处理每个用户的数据集
             for i, user_id in enumerate(users, 1):
-                print(f"处理用户 {i}/{len(users)}: {user_id}")
-                self._process_user(user_id)
-                
+                try:
+                    print(f"\n处理用户 {i}/{len(users)}: {user_id}")
+                    self._process_user(user_id)
+                except Exception as e:
+                    print(f"处理用户 {user_id} 失败: {str(e)}")
+                    continue
+                    
         finally:
             cursor.close()
             
