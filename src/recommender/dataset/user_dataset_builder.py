@@ -202,13 +202,21 @@ class UserDatasetBuilder:
             "GF1B": "TB_META_GF1B",
             "GF1C": "TB_META_GF1C",
             "GF1D": "TB_META_GF1D",
-            "GF1BCD": "TB_META_GF1BCD",
+            "GF1BCD": "JGF_GXFW.TB_META_GF1BCD",
+            "GF1BCD ": "JGF_GXFW.TB_META_GF1BCD",
             "ZY3-1": "TB_META_ZY301",
             "ZY3-2": "TB_META_ZY302",
-            "ZY3-3": "TB_META_ZY303",
+            "ZY303": "TB_META_ZY303",
+            "ZY301": "TB_META_ZY301",
+            "ZY302": "TB_META_ZY302",
+            "ZY303": "TB_META_ZY303",
             "GF5": "TB_META_GF5",
             "GF6": "TB_META_GF6",
             "GF7": "TB_META_GF7",
+            "ZY1E": "TB_META_ZY1E",
+            "ZY1F": "TB_META_ZY1F",
+            "CB04A":"TB_META_CB04A",
+
         }
         return satellite_mapping.get(satellite)
     
