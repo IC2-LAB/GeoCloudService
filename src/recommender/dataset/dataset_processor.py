@@ -59,5 +59,9 @@ class DatasetProcessor:
         user_dir = os.path.join(self.output_dir, user_id)
         os.makedirs(user_dir, exist_ok=True)
         
-        features_df.to_csv(os.path.join(user_dir, 'features.csv'), index=False)
-        np.save(os.path.join(user_dir, 'labels.npy'), labels)
+        # 将标签列添加回特征DataFrame
+        output_df = features_df.copy()
+        output_df['label'] = labels
+        
+        # 保存完整的数据集（包含特征和标签）
+        output_df.to_csv(os.path.join(user_dir, 'features.csv'), index=False)

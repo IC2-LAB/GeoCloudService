@@ -19,12 +19,12 @@ class UserDatasetBuilder:
         self.conn = conn
         self.neg_pos_ratio = neg_pos_ratio
         
-    def get_user_dataset(self, user_id: str) -> pd.DataFrame:
+    def get_user_dataset(self, user_id: str) -> Tuple[pd.DataFrame, np.ndarray]:
         """为指定用户构建训练数据集"""
         # 1. 获取正样本
         positive_samples = self._get_positive_samples(user_id)
         if not positive_samples:
-            return pd.DataFrame()
+            return pd.DataFrame(), np.array([])
         
         # 2. 获取负样本
         negative_samples = self._get_negative_samples(user_id, positive_samples)
@@ -35,9 +35,15 @@ class UserDatasetBuilder:
         for sample in negative_samples:
             sample['label'] = 0
         
-        # 4. 合并样本并直接返回DataFrame
+        # 4. 合并样本并创建DataFrame
         all_samples = positive_samples + negative_samples
-        return pd.DataFrame(all_samples)
+        df = pd.DataFrame(all_samples)
+        
+        # 5. 分离特征和标签
+        labels = df['label'].values
+        features_df = df.drop('label', axis=1)
+        
+        return features_df, labels
     
     def _get_positive_samples(self, user_id: str) -> List[Dict[str, Any]]:
         """获取用户的正样本数据"""
@@ -131,15 +137,12 @@ class UserDatasetBuilder:
             # 3. 按比例获取负样本
             negative_samples = []
             for sat_id, count in satellite_counts.items():
-                # 获取3倍的负样本（或根据你的需求设置倍数）
                 needed_count = count * self.neg_pos_ratio
-                
-                # 找到对应的元数据表
                 meta_table = self._get_meta_table(sat_id)
                 if not meta_table:
                     continue
-                    
-                # 随机获取负样本
+
+                # 修改：使用 NOT EXISTS 而不是 NOT IN
                 cursor.execute(f"""
                     WITH RANDOM_SAMPLES AS (
                         SELECT 
@@ -156,13 +159,22 @@ class UserDatasetBuilder:
                             F_BOTTOMRIGHTLATITUDE,
                             F_BOTTOMRIGHTLONGITUDE,
                             F_PRODUCTLEVEL
-                        FROM {meta_table}
-                        WHERE F_DATANAME NOT IN ({','.join([f"'{d}'" for d in existing_data])})
+                        FROM {meta_table} m
+                        WHERE NOT EXISTS (
+                            SELECT 1 
+                            FROM TF_ORDER o
+                            JOIN TF_ORDERDATA od ON o.F_ID = od.F_ORDERID
+                            WHERE o.F_LOGIN_USER = :user_id
+                            AND od.F_DATANAME = m.F_DATANAME
+                        )
                         AND ROWNUM <= :needed_count
                         ORDER BY DBMS_RANDOM.VALUE
                     )
                     SELECT * FROM RANDOM_SAMPLES
-                """, {'needed_count': needed_count})
+                """, {
+                    'user_id': user_id,
+                    'needed_count': needed_count
+                })
                 
                 # 直接将查询结果转换为字典列表
                 column_names = [
