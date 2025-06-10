@@ -31,7 +31,6 @@ class DatasetProcessor:
                 FROM TF_ORDER o
                 JOIN TF_ORDERDATA od ON o.F_ID = od.F_ORDERID
                 WHERE o.F_LOGIN_USER IS NOT NULL
-                AND od.F_STATUS = 'SUCCESS'
             """)
             users = [row[0] for row in cursor.fetchall()]
             print(f"找到 {len(users)} 个有效用户")
